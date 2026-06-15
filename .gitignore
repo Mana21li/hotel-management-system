@@ -16,6 +16,17 @@ logs/
 .env.local
 .env.*.local
 
+# Database dumps / backups (may be large and can contain real data)
+*.dump
+*.sql.gz
+*.sql.bak
+*.bak
+backups/
+
+# Local database data (if ever bind-mounted instead of a named volume)
+pgdata/
+db/data/
+
 # Dependencies (common ecosystems — keep harmless if unused)
 node_modules/
 venv/

@@ -1,0 +1,60 @@
+# Docker Compose configuration for the Hotel Management System database.
+#
+# This file declares the services (containers) the project needs. Right now
+# that's just PostgreSQL. Run everything with:
+#
+#     docker compose up -d        # start in the background
+#     docker compose ps           # see what's running
+#     docker compose logs -f db   # follow the database logs
+#     docker compose down         # stop (data is preserved in the volume)
+#     docker compose down -v      # stop AND delete all data (fresh start)
+#
+# Credentials are read from the .env file (which is gitignored). See
+# .env.example for the template.
+
+services:
+  db:
+    # Official PostgreSQL image, version 16, on the lightweight Alpine base.
+    # Pinning the version (not "latest") keeps the environment reproducible.
+    image: postgres:16-alpine
+
+    # A friendly, stable name so `docker exec` commands are predictable.
+    container_name: hms_postgres
+
+    # Restart the container automatically unless you explicitly stopped it.
+    restart: unless-stopped
+
+    # These env vars configure the database on first startup. They come from
+    # your .env file so no secrets are hard-coded here.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+    # Expose the database on localhost so tools on your Mac (psql, DBeaver,
+    # your app) can connect to it. Format is HOST_PORT:CONTAINER_PORT.
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+    # Persist the actual data in a named Docker volume. Without this, all data
+    # would vanish every time the container is recreated. With it, `down` then
+    # `up` keeps your tables and rows intact.
+    volumes:
+      - hms_pgdata:/var/lib/postgresql/data
+      # Any .sql or .sh files placed in db/init/ run automatically the FIRST
+      # time the database is created (empty volume). Great for auto-loading the
+      # schema. Files run in alphabetical order.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+
+    # Healthcheck lets Docker (and us) know when Postgres is actually ready to
+    # accept connections, not just when the container has started.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+# Named volume declaration. Docker manages where this lives on disk.
+volumes:
+  hms_pgdata:
+    name: hms_pgdata
