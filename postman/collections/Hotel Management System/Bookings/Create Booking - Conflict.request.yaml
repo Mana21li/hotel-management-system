@@ -1,0 +1,39 @@
+$kind: http-request
+name: Create Booking - Conflict
+method: POST
+url: '{{baseUrl}}/api/bookings'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "userId": 2,
+      "roomId": 3,
+      "checkInDate": "2026-06-10",
+      "checkOutDate": "2026-06-13"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status code is 409", function () {
+        pm.response.to.have.status(409);
+      });
+
+      pm.test("Response field 'status' equals 409", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.status).to.eql(409);
+      });
+
+      pm.test("Response field 'error' equals 'Conflict'", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.error).to.eql("Conflict");
+      });
+
+      pm.test("Response field 'message' contains 'not available'", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.message).to.include("not available");
+      });

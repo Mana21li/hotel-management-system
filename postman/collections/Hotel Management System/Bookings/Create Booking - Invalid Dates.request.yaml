@@ -1,0 +1,36 @@
+$kind: http-request
+name: Create Booking - Invalid Dates
+method: POST
+url: '{{baseUrl}}/api/bookings'
+order: 4000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "userId": 1,
+      "roomId": 3,
+      "checkInDate": "2026-09-13",
+      "checkOutDate": "2026-09-10"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status code is 400", function () {
+        pm.response.to.have.status(400);
+      });
+
+      pm.test("Response field 'status' equals 400", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.status).to.eql(400);
+      });
+
+      pm.test("Response field 'message' contains 'checkOutDate' or 'after'", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.message).to.satisfy(function (msg) {
+          return msg.includes("checkOutDate") || msg.includes("after");
+        });
+      });

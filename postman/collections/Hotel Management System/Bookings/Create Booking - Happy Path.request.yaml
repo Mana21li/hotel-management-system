@@ -1,0 +1,66 @@
+$kind: http-request
+name: Create Booking - Happy Path
+method: POST
+url: '{{baseUrl}}/api/bookings'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "userId": 1,
+      "roomId": 20,
+      "checkInDate": "2026-10-01",
+      "checkOutDate": "2026-10-05"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status code is 201", function () {
+        pm.response.to.have.status(201);
+      });
+
+      pm.test("Response has field 'bookingId'", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData).to.have.property('bookingId');
+      });
+
+      pm.test("Response has field 'bookingReference' that starts with 'BK-'", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.bookingReference).to.be.a('string').and.to.match(/^BK-/);
+      });
+
+      pm.test("Response field 'status' equals 'PENDING'", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.status).to.eql("PENDING");
+      });
+
+      pm.test("Response field 'userId' equals 1", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.userId).to.eql(1);
+      });
+
+      pm.test("Response field 'roomId' equals 20", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.roomId).to.eql(20);
+      });
+
+      pm.test("Response field 'nights' equals 4", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.nights).to.eql(4);
+      });
+
+      pm.test("Response field 'totalAmount' equals pricePerNight * nights", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData.totalAmount).to.eql(jsonData.pricePerNight * jsonData.nights);
+      });
+
+      pm.test("Response has field 'createdAt'", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData).to.have.property('createdAt');
+      });
+
+      pm.collectionVariables.set("lastBookingId", pm.response.json().bookingId);

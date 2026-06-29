@@ -1,0 +1,5 @@
+$kind: collection
+name: Hotel Management System
+variables:
+  baseUrl: http://localhost:8080
+  lastBookingId: ""

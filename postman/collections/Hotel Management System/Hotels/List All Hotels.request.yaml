@@ -1,0 +1,39 @@
+$kind: http-request
+name: List All Hotels
+method: GET
+url: '{{baseUrl}}/api/hotels'
+order: 1000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status code is 200", function () {
+        pm.response.to.have.status(200);
+      });
+
+      pm.test("Response is an array", function () {
+        var jsonData = pm.response.json();
+        pm.expect(jsonData).to.be.an('array');
+      });
+
+      pm.test("Each hotel has fields: id, name, addressLine, starRating", function () {
+        var jsonData = pm.response.json();
+        jsonData.forEach(function (hotel) {
+          pm.expect(hotel).to.have.property('id');
+          pm.expect(hotel).to.have.property('name');
+          pm.expect(hotel).to.have.property('addressLine');
+          pm.expect(hotel).to.have.property('starRating');
+        });
+      });
+
+      pm.test("starRating is between 1 and 5 for each hotel", function () {
+        var jsonData = pm.response.json();
+        jsonData.forEach(function (hotel) {
+          pm.expect(hotel.starRating).to.be.at.least(1);
+          pm.expect(hotel.starRating).to.be.at.most(5);
+        });
+      });
+
+      pm.test("Response time is less than 2000ms", function () {
+        pm.expect(pm.response.responseTime).to.be.below(2000);
+      });

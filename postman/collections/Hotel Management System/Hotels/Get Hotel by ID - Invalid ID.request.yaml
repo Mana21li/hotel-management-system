@@ -1,0 +1,12 @@
+$kind: http-request
+name: Get Hotel by ID - Invalid ID
+method: GET
+url: '{{baseUrl}}/api/hotels/abc'
+order: 4000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status code is 400 or 404", function () {
+        pm.expect(pm.response.code).to.be.oneOf([400, 404]);
+      });

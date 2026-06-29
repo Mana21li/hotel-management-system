@@ -39,3 +39,8 @@ dist/
 build/
 out/
 target/
+.gradle/
+
+# Spring Boot / Gradle (backend module keeps its own .gitignore too)
+backend/.gradle/
+backend/build/
