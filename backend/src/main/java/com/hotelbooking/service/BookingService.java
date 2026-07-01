@@ -17,7 +17,8 @@ import com.hotelbooking.repository.RoomRepository;
 import com.hotelbooking.repository.UserRepository;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.temporal.ChronoUnit;
@@ -26,6 +27,14 @@ import java.util.UUID;
 /**
  * Business logic for creating bookings.
  * Contract: {@code docs/api/bookings.md}
+ * <p>
+ * Concurrency strategy (defense in depth):
+ * <ol>
+ *   <li><strong>Redis distributed lock</strong> — only one booking attempt per
+ *       room+dates at a time; fail fast without hammering the DB.</li>
+ *   <li><strong>Database {@code EXCLUDE} constraint</strong> — final guarantee even
+ *       if the lock is bypassed or Redis restarts.</li>
+ * </ol>
  */
 @Service
 public class BookingService {
@@ -34,46 +43,56 @@ public class BookingService {
     private final RoomRepository roomRepository;
     private final UserRepository userRepository;
     private final HotelRepository hotelRepository;
+    private final BookingLockService bookingLockService;
+    private final TransactionTemplate transactionTemplate;
 
     public BookingService(BookingRepository bookingRepository,
                           RoomRepository roomRepository,
                           UserRepository userRepository,
-                          HotelRepository hotelRepository) {
+                          HotelRepository hotelRepository,
+                          BookingLockService bookingLockService,
+                          PlatformTransactionManager transactionManager) {
         this.bookingRepository = bookingRepository;
         this.roomRepository = roomRepository;
         this.userRepository = userRepository;
         this.hotelRepository = hotelRepository;
+        this.bookingLockService = bookingLockService;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     /**
      * Creates a PENDING booking for a room over a date range.
      * <p>
-     * Availability is enforced by the database {@code EXCLUDE} constraint: we attempt
-     * the insert and translate an overlap violation into a 409, which is race-safe.
+     * Order matters: acquire the distributed lock <em>before</em> opening a DB
+     * transaction. If {@code @Transactional} wrapped the whole method including the
+     * lock call, two threads could both start transactions before either got the lock.
      */
-    @Transactional
     public BookingResponse createBooking(CreateBookingRequest request) {
-        // 1. Cross-field date rule (field-level validation already ran in the controller).
         if (!request.checkOutDate().isAfter(request.checkInDate())) {
             throw new InvalidBookingDateException("checkOutDate must be after checkInDate");
         }
 
-        // 2. Validate the user exists and is active (cheap, fail fast).
+        return bookingLockService.executeWithRoomLock(
+                request.roomId(),
+                request.checkInDate(),
+                request.checkOutDate(),
+                () -> transactionTemplate.execute(status -> createBookingInTransaction(request))
+        );
+    }
+
+    private BookingResponse createBookingInTransaction(CreateBookingRequest request) {
         User user = userRepository.findById(request.userId())
                 .filter(User::isActive)
                 .orElseThrow(() -> new UserNotFoundException(request.userId()));
 
-        // 3. Validate the room exists and is active.
         Room room = roomRepository.findById(request.roomId())
                 .filter(Room::isActive)
                 .orElseThrow(() -> new RoomNotFoundException(request.roomId()));
 
-        // 4. Snapshot the price at booking time (room price may change later).
         long nights = ChronoUnit.DAYS.between(request.checkInDate(), request.checkOutDate());
         BigDecimal pricePerNight = room.getNightlyPrice();
         BigDecimal totalAmount = pricePerNight.multiply(BigDecimal.valueOf(nights));
 
-        // 5. Build the PENDING booking.
         Booking booking = Booking.builder()
                 .bookingReference(generateBookingReference())
                 .userId(user.getId())
@@ -85,8 +104,6 @@ public class BookingService {
                 .status(BookingStatus.PENDING)
                 .build();
 
-        // 6. Race-safe insert. saveAndFlush forces the INSERT now so an overlap
-        //    violation surfaces inside this try block (not later at commit).
         try {
             Booking saved = bookingRepository.saveAndFlush(booking);
             return toResponse(saved, room, (int) nights);
@@ -95,7 +112,7 @@ public class BookingService {
                 throw new RoomNotAvailableException(
                         room.getId(), request.checkInDate(), request.checkOutDate());
             }
-            throw ex; // some other integrity problem — don't mislabel it
+            throw ex;
         }
     }
 

@@ -14,20 +14,25 @@ import com.hotelbooking.repository.BookingRepository;
 import com.hotelbooking.repository.HotelRepository;
 import com.hotelbooking.repository.RoomRepository;
 import com.hotelbooking.repository.UserRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -55,8 +60,11 @@ class BookingServiceTest {
     private UserRepository userRepository;
     @Mock
     private HotelRepository hotelRepository;
+    @Mock
+    private BookingLockService bookingLockService;
+    @Mock
+    private PlatformTransactionManager transactionManager;
 
-    @InjectMocks
     private BookingService bookingService;
 
     private static final Long USER_ID = 1L;
@@ -64,6 +72,22 @@ class BookingServiceTest {
     private static final Long HOTEL_ID = 100L;
     private static final LocalDate CHECK_IN = LocalDate.now().plusDays(1);
     private static final LocalDate CHECK_OUT = LocalDate.now().plusDays(3); // 2 nights
+
+    @BeforeEach
+    void setUp() {
+        lenient().when(transactionManager.getTransaction(any(TransactionDefinition.class)))
+                .thenReturn(new SimpleTransactionStatus());
+        lenient().when(bookingLockService.executeWithRoomLock(any(), any(), any(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(3, Supplier.class).get());
+
+        bookingService = new BookingService(
+                bookingRepository,
+                roomRepository,
+                userRepository,
+                hotelRepository,
+                bookingLockService,
+                transactionManager);
+    }
 
     private CreateBookingRequest validRequest() {
         return new CreateBookingRequest(USER_ID, ROOM_ID, CHECK_IN, CHECK_OUT);
@@ -116,7 +140,7 @@ class BookingServiceTest {
         assertThatThrownBy(() -> bookingService.createBooking(sameDay))
                 .isInstanceOf(InvalidBookingDateException.class);
 
-        // Fail fast: we never touched the database.
+        verify(bookingLockService, never()).executeWithRoomLock(any(), any(), any(), any());
         verify(userRepository, never()).findById(any());
         verify(bookingRepository, never()).saveAndFlush(any());
     }

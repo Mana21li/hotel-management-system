@@ -19,6 +19,23 @@ spring:
         jdbc:
           time_zone: UTC
 
+  # Connection details for the Redis container (see docker-compose.yml).
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  # Tell the Spring cache abstraction to use Redis as the backing store, so the
+  # auto-configured CacheManager is a RedisCacheManager.
+  cache:
+    type: redis
+
+# Distributed lock tuning for POST /api/bookings (see BookingLockService).
+booking:
+  lock:
+    wait-seconds: 3    # how long a request waits for another booking to finish
+    lease-seconds: 30  # auto-release if the holder crashes (TTL safety net)
+
 server:
   port: 8080
 
