@@ -4,8 +4,16 @@
 # Editor / IDE
 .vscode/
 .idea/
+*.iml
+*.ipr
+*.iws
+.cursor/
 *.swp
 *.swo
+
+# Postman — local API client workspace (use docs/api/*.md as the shared contract)
+postman/
+.postman/
 
 # Logs
 *.log
@@ -44,3 +52,4 @@ target/
 # Spring Boot / Gradle (backend module keeps its own .gitignore too)
 backend/.gradle/
 backend/build/
+backend/bin/
