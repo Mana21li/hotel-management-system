@@ -1,7 +1,7 @@
-# Docker Compose configuration for the Hotel Management System database.
+# Docker Compose configuration for the Hotel Management System.
 #
-# This file declares the services (containers) the project needs. Right now
-# that's just PostgreSQL. Run everything with:
+# Services: PostgreSQL (source of truth), Redis (cache + locks), Elasticsearch (search).
+# Run everything with:
 #
 #     docker compose up -d        # start in the background
 #     docker compose ps           # see what's running
@@ -85,7 +85,67 @@ services:
       timeout: 3s
       retries: 5
 
+  elasticsearch:
+    # Official Elasticsearch 8.x — pinned for reproducible local search dev.
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+
+    container_name: hms_elasticsearch
+
+    restart: unless-stopped
+
+    environment:
+      # Single-node cluster — no peer discovery needed for local dev.
+      - discovery.type=single-node
+      # Disable TLS/auth locally so curl and Spring connect without certificates.
+      # Production MUST enable security (xpack.security.enabled=true).
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      # Cap JVM heap — ES defaults can consume most of your RAM.
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      # Allow running as root in the container on some Docker setups.
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+    ports:
+      - "${ELASTICSEARCH_PORT:-9200}:9200"
+
+    volumes:
+      # Persist index data across container restarts (unlike Redis cache).
+      - hms_esdata:/usr/share/elasticsearch/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+
+  kibana:
+    # Optional UI to inspect indices, run queries, and debug mappings.
+    image: docker.elastic.co/kibana/kibana:8.15.3
+
+    container_name: hms_kibana
+
+    restart: unless-stopped
+
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      # Match elasticsearch security settings for local dev.
+      - xpack.security.enabled=false
+
+    ports:
+      - "${KIBANA_PORT:-5601}:5601"
+
 # Named volume declaration. Docker manages where this lives on disk.
 volumes:
   hms_pgdata:
     name: hms_pgdata
+  hms_esdata:
+    name: hms_esdata

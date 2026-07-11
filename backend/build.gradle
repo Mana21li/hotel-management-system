@@ -26,6 +26,8 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-data-redis'
 	// Distributed locks (SET NX + lease renewal + owner-only unlock via Lua scripts).
 	implementation 'org.redisson:redisson:3.40.2'
+	// Elasticsearch Java API client (search read model sync + queries in later milestones).
+	implementation 'org.springframework.boot:spring-boot-starter-data-elasticsearch'
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'org.postgresql:postgresql'
 	annotationProcessor 'org.projectlombok:lombok'

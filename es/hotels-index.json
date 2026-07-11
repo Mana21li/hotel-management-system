@@ -1,0 +1,67 @@
+{
+  "aliases": {
+    "hotels": {}
+  },
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "analysis": {
+      "analyzer": {
+        "hotel_text_analyzer": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase", "asciifolding"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "hotelId": {
+        "type": "long"
+      },
+      "name": {
+        "type": "text",
+        "analyzer": "hotel_text_analyzer",
+        "fields": {
+          "keyword": { "type": "keyword" }
+        }
+      },
+      "description": {
+        "type": "text",
+        "analyzer": "hotel_text_analyzer"
+      },
+      "addressLine": {
+        "type": "text",
+        "analyzer": "hotel_text_analyzer"
+      },
+      "cityId": {
+        "type": "long"
+      },
+      "cityName": {
+        "type": "text",
+        "analyzer": "hotel_text_analyzer",
+        "fields": {
+          "keyword": { "type": "keyword" }
+        }
+      },
+      "starRating": {
+        "type": "integer"
+      },
+      "minNightlyPrice": {
+        "type": "scaled_float",
+        "scaling_factor": 100
+      },
+      "active": {
+        "type": "boolean"
+      },
+      "createdAt": {
+        "type": "date"
+      },
+      "updatedAt": {
+        "type": "date"
+      }
+    }
+  }
+}

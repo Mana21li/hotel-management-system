@@ -30,7 +30,17 @@ spring:
   cache:
     type: redis
 
-# Distributed lock tuning for POST /api/bookings (see BookingLockService).
+  # Elasticsearch cluster (see docker-compose.yml elasticsearch service).
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URI:http://localhost:9200}
+
+# Search index configuration (alias — not the versioned physical index name).
+search:
+  elasticsearch:
+    hotels-index-alias: hotels
+    fuzzy-enabled: true
+    max-query-length: 200
+
 booking:
   lock:
     wait-seconds: 3    # how long a request waits for another booking to finish

@@ -2,6 +2,7 @@ package com.hotelbooking.exception;
 
 import com.hotelbooking.dto.response.ErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -47,6 +48,23 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.CONFLICT, ex.getMessage(), request);
     }
 
+    // --- 400 Bad Request: invalid query parameters -------------------------------
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalArgument(
+            IllegalArgumentException ex, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST, ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<ErrorResponse> handleConstraintViolation(
+            ConstraintViolationException ex, HttpServletRequest request) {
+        String message = ex.getConstraintViolations().stream()
+                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+                .collect(Collectors.joining("; "));
+        return build(HttpStatus.BAD_REQUEST, message, request);
+    }
+
     // --- 400 Bad Request: cross-field date rule ----------------------------------
 
     @ExceptionHandler(InvalidBookingDateException.class)
@@ -64,6 +82,15 @@ public class GlobalExceptionHandler {
                 .map(this::formatFieldError)
                 .collect(Collectors.joining("; "));
         return build(HttpStatus.BAD_REQUEST, message, request);
+    }
+
+    // --- 503 Service Unavailable: Elasticsearch down / index missing -----------
+
+    @ExceptionHandler(SearchServiceUnavailableException.class)
+    public ResponseEntity<ErrorResponse> handleSearchUnavailable(
+            SearchServiceUnavailableException ex, HttpServletRequest request) {
+        log.warn("Search unavailable for {} {}: {}", request.getMethod(), request.getRequestURI(), ex.getMessage());
+        return build(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), request);
     }
 
     // --- 500 Internal Server Error: catch-all ------------------------------------
