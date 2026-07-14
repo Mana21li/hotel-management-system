@@ -28,6 +28,9 @@ dependencies {
 	implementation 'org.redisson:redisson:3.40.2'
 	// Elasticsearch Java API client (search read model sync + queries in later milestones).
 	implementation 'org.springframework.boot:spring-boot-starter-data-elasticsearch'
+	// Kafka producer/consumer (event-driven side effects after booking).
+	implementation 'org.springframework.kafka:spring-kafka'
+	testImplementation 'org.springframework.kafka:spring-kafka-test'
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'org.postgresql:postgresql'
 	annotationProcessor 'org.projectlombok:lombok'

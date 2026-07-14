@@ -10,6 +10,7 @@ import com.hotelbooking.exception.InvalidBookingDateException;
 import com.hotelbooking.exception.RoomNotAvailableException;
 import com.hotelbooking.exception.RoomNotFoundException;
 import com.hotelbooking.exception.UserNotFoundException;
+import com.hotelbooking.outbox.OutboxService;
 import com.hotelbooking.repository.BookingRepository;
 import com.hotelbooking.repository.HotelRepository;
 import com.hotelbooking.repository.RoomRepository;
@@ -64,6 +65,8 @@ class BookingServiceTest {
     private BookingLockService bookingLockService;
     @Mock
     private PlatformTransactionManager transactionManager;
+    @Mock
+    private OutboxService outboxService;
 
     private BookingService bookingService;
 
@@ -86,7 +89,8 @@ class BookingServiceTest {
                 userRepository,
                 hotelRepository,
                 bookingLockService,
-                transactionManager);
+                transactionManager,
+                outboxService);
     }
 
     private CreateBookingRequest validRequest() {
@@ -130,6 +134,8 @@ class BookingServiceTest {
         assertThat(response.bookingReference()).startsWith("BK-");
         assertThat(response.checkInDate()).isEqualTo(CHECK_IN);
         assertThat(response.checkOutDate()).isEqualTo(CHECK_OUT);
+
+        verify(outboxService, org.mockito.Mockito.times(2)).enqueue(any(), any(), any(), any());
     }
 
     @Test
@@ -143,6 +149,7 @@ class BookingServiceTest {
         verify(bookingLockService, never()).executeWithRoomLock(any(), any(), any(), any());
         verify(userRepository, never()).findById(any());
         verify(bookingRepository, never()).saveAndFlush(any());
+        verify(outboxService, never()).enqueue(any(), any(), any(), any());
     }
 
     @Test
@@ -203,6 +210,8 @@ class BookingServiceTest {
         assertThatThrownBy(() -> bookingService.createBooking(validRequest()))
                 .isInstanceOf(RoomNotAvailableException.class)
                 .hasMessageContaining(ROOM_ID.toString());
+
+        verify(outboxService, never()).enqueue(any(), any(), any(), any());
     }
 
     @Test

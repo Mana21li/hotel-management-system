@@ -11,6 +11,10 @@ import com.hotelbooking.exception.InvalidBookingDateException;
 import com.hotelbooking.exception.RoomNotAvailableException;
 import com.hotelbooking.exception.RoomNotFoundException;
 import com.hotelbooking.exception.UserNotFoundException;
+import com.hotelbooking.config.KafkaConfig;
+import com.hotelbooking.kafka.event.BookingCreatedEvent;
+import com.hotelbooking.kafka.event.HotelUpsertedEvent;
+import com.hotelbooking.outbox.OutboxService;
 import com.hotelbooking.repository.BookingRepository;
 import com.hotelbooking.repository.HotelRepository;
 import com.hotelbooking.repository.RoomRepository;
@@ -45,19 +49,22 @@ public class BookingService {
     private final HotelRepository hotelRepository;
     private final BookingLockService bookingLockService;
     private final TransactionTemplate transactionTemplate;
+    private final OutboxService outboxService;
 
     public BookingService(BookingRepository bookingRepository,
                           RoomRepository roomRepository,
                           UserRepository userRepository,
                           HotelRepository hotelRepository,
                           BookingLockService bookingLockService,
-                          PlatformTransactionManager transactionManager) {
+                          PlatformTransactionManager transactionManager,
+                          OutboxService outboxService) {
         this.bookingRepository = bookingRepository;
         this.roomRepository = roomRepository;
         this.userRepository = userRepository;
         this.hotelRepository = hotelRepository;
         this.bookingLockService = bookingLockService;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.outboxService = outboxService;
     }
 
     /**
@@ -66,6 +73,9 @@ public class BookingService {
      * Order matters: acquire the distributed lock <em>before</em> opening a DB
      * transaction. If {@code @Transactional} wrapped the whole method including the
      * lock call, two threads could both start transactions before either got the lock.
+     * <p>
+     * Domain events are written to the <strong>transactional outbox</strong> in the same
+     * DB transaction (not published to Kafka directly). {@code OutboxRelay} publishes later.
      */
     public BookingResponse createBooking(CreateBookingRequest request) {
         if (!request.checkOutDate().isAfter(request.checkInDate())) {
@@ -106,7 +116,21 @@ public class BookingService {
 
         try {
             Booking saved = bookingRepository.saveAndFlush(booking);
-            return toResponse(saved, room, (int) nights);
+            BookingResponse response = toResponse(saved, room, (int) nights);
+
+            // Same transaction as the booking insert — durable even if Kafka is down.
+            outboxService.enqueue(
+                    KafkaConfig.BOOKING_EVENTS_TOPIC,
+                    String.valueOf(response.roomId()),
+                    BookingCreatedEvent.TYPE,
+                    BookingCreatedEvent.from(response));
+            outboxService.enqueue(
+                    KafkaConfig.HOTEL_EVENTS_TOPIC,
+                    String.valueOf(room.getHotelId()),
+                    HotelUpsertedEvent.TYPE,
+                    HotelUpsertedEvent.of(room.getHotelId()));
+
+            return response;
         } catch (DataIntegrityViolationException ex) {
             if (isOverlapViolation(ex)) {
                 throw new RoomNotAvailableException(

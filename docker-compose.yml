@@ -1,6 +1,6 @@
 # Docker Compose configuration for the Hotel Management System.
 #
-# Services: PostgreSQL (source of truth), Redis (cache + locks), Elasticsearch (search).
+# Services: PostgreSQL (source of truth), Redis (cache + locks), Elasticsearch (search), Kafka (events).
 # Run everything with:
 #
 #     docker compose up -d        # start in the background
@@ -142,6 +142,62 @@ services:
 
     ports:
       - "${KIBANA_PORT:-5601}:5601"
+
+  kafka:
+    # Apache Kafka 3.x in KRaft mode — no Zookeeper needed (simpler local setup).
+    image: apache/kafka:3.8.1
+
+    container_name: hms_kafka
+
+    restart: unless-stopped
+
+    ports:
+      # Host apps (Spring Boot on your Mac) connect here.
+      - "${KAFKA_PORT:-9092}:9092"
+      # Kafka UI (optional) connects via the internal Docker listener below.
+
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # Two listeners: one for your Mac (localhost), one for other containers (kafka:9094).
+      KAFKA_LISTENERS: PLAINTEXT_HOST://0.0.0.0:9092,PLAINTEXT_DOCKER://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_HOST://localhost:9092,PLAINTEXT_DOCKER://kafka:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,PLAINTEXT_DOCKER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_DOCKER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  kafka-ui:
+    # Web UI to inspect topics, messages, and consumer groups — invaluable when learning.
+    image: provectuslabs/kafka-ui:latest
+
+    container_name: hms_kafka_ui
+
+    restart: unless-stopped
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    ports:
+      - "${KAFKA_UI_PORT:-8081}:8080"
+
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9094
+      DYNAMIC_CONFIG_ENABLED: "true"
 
 # Named volume declaration. Docker manages where this lives on disk.
 volumes:
