@@ -1,18 +1,68 @@
 # Docker Compose configuration for the Hotel Management System.
 #
-# Services: PostgreSQL (source of truth), Redis (cache + locks), Elasticsearch (search), Kafka (events).
+# Services: PostgreSQL, Redis, Elasticsearch, Kafka (+ optional app / SonarQube CE).
 # Run everything with:
 #
-#     docker compose up -d        # start in the background
-#     docker compose ps           # see what's running
-#     docker compose logs -f db   # follow the database logs
-#     docker compose down         # stop (data is preserved in the volume)
-#     docker compose down -v      # stop AND delete all data (fresh start)
+#     docker compose up -d                              # infra only
+#     docker compose --profile app up -d --build        # + containerized monolith
+#     docker compose --profile sonar up -d              # + SonarQube CE (http://localhost:9000)
+#     docker compose ps
+#     docker compose down                               # stop (volumes preserved)
+#     docker compose --profile sonar --profile app down -v  # stop AND wipe volumes
 #
 # Credentials are read from the .env file (which is gitignored). See
 # .env.example for the template.
 
 services:
+  app:
+    # The Spring Boot monolith, containerized (Stage 4, Milestone 3).
+    #
+    # Behind a compose PROFILE so the default workflow is unchanged:
+    #     docker compose up -d                     → infra only (app via ./gradlew bootRun)
+    #     docker compose --profile app up -d --build  → infra + containerized app
+    build: ./backend
+
+    container_name: hms_app
+
+    profiles: ["app"]
+
+    restart: unless-stopped
+
+    ports:
+      - "${APP_PORT:-8080}:8080"
+
+    # Inside the Docker network, services are reached by SERVICE NAME on their
+    # CONTAINER port — not localhost, not the host-mapped port:
+    #   db:5432, redis:6379, elasticsearch:9200, kafka:9094 (the docker listener).
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ELASTICSEARCH_URI: http://elasticsearch:9200
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9094
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+    # TCP check via bash (the JRE image has no curl/wget).
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8080' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
   db:
     # Official PostgreSQL image, version 16, on the lightweight Alpine base.
     # Pinning the version (not "latest") keeps the environment reproducible.
@@ -199,9 +249,72 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9094
       DYNAMIC_CONFIG_ENABLED: "true"
 
+  # -------------------------------------------------------------------------
+  # SonarQube Community Edition (Stage 4 Milestone 4 — self-hosted quality gate)
+  # Opt-in: docker compose --profile sonar up -d
+  # UI: http://localhost:9000  (default login admin / admin — change on first use)
+  # -------------------------------------------------------------------------
+  sonar_db:
+    image: postgres:16-alpine
+    container_name: hms_sonar_db
+    profiles: ["sonar"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: sonar
+      POSTGRES_DB: sonar
+    # No host port — only SonarQube reaches this DB on the compose network.
+    volumes:
+      - hms_sonardb:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonar -d sonar"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  sonarqube:
+    # Community Edition — free, self-hosted. Separate from the hotel Postgres.
+    image: sonarqube:lts-community
+    container_name: hms_sonarqube
+    profiles: ["sonar"]
+    restart: unless-stopped
+    depends_on:
+      sonar_db:
+        condition: service_healthy
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonar_db:5432/sonar
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: sonar
+      # Docker / CI often fails ES bootstrap checks; safe for local learning.
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+      # Keep memory modest for local + GitHub runners (~7GB).
+      SONAR_WEB_JAVAOPTS: -Xmx512m -Xms128m
+      SONAR_CE_JAVAOPTS: -Xmx512m -Xms128m
+      SONAR_SEARCH_JAVAOPTS: -Xmx512m -Xms512m
+    ports:
+      - "${SONARQUBE_PORT:-9000}:9000"
+    volumes:
+      - hms_sonarqube_data:/opt/sonarqube/data
+      - hms_sonarqube_extensions:/opt/sonarqube/extensions
+      - hms_sonarqube_logs:/opt/sonarqube/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/api/system/status | grep -q '\"status\":\"UP\"' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+
 # Named volume declaration. Docker manages where this lives on disk.
 volumes:
   hms_pgdata:
     name: hms_pgdata
   hms_esdata:
     name: hms_esdata
+  hms_sonardb:
+    name: hms_sonardb
+  hms_sonarqube_data:
+    name: hms_sonarqube_data
+  hms_sonarqube_extensions:
+    name: hms_sonarqube_extensions
+  hms_sonarqube_logs:
+    name: hms_sonarqube_logs

@@ -2,6 +2,7 @@ plugins {
 	id 'java'
 	id 'org.springframework.boot' version '3.5.0'
 	id 'io.spring.dependency-management' version '1.1.7'
+	id 'jacoco'
 }
 
 group = 'com.hotelbooking'
@@ -40,6 +41,51 @@ dependencies {
 	testAnnotationProcessor 'org.projectlombok:lombok'
 }
 
+/**
+ * Unit tests only (*Test). Fast, no Docker required.
+ * Integration tests (*IT + context smoke) run via {@code integrationTest}.
+ */
 tasks.named('test') {
 	useJUnitPlatform()
+	filter {
+		excludeTestsMatching '*IT'
+		excludeTestsMatching 'HotelBookingApiApplicationTests'
+	}
+	finalizedBy jacocoTestReport
+}
+
+/**
+ * Integration tests against live Docker infra (Postgres, Redis, ES, Kafka).
+ * Local: {@code docker compose up -d} then {@code ./gradlew integrationTest}
+ * CI: compose is started by the GitHub Actions workflow before this task.
+ */
+tasks.register('integrationTest', Test) {
+	description = 'Runs *IT tests against Docker infrastructure'
+	group = 'verification'
+	shouldRunAfter test
+	useJUnitPlatform()
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	filter {
+		includeTestsMatching '*IT'
+		includeTestsMatching 'HotelBookingApiApplicationTests'
+	}
+	finalizedBy jacocoTestReport
+}
+
+jacoco {
+	toolVersion = '0.8.13'
+}
+
+tasks.named('jacocoTestReport') {
+	// Aggregate whatever .exec files exist (unit and/or integration).
+	// Do NOT dependOn integrationTest — that would force Docker when running unit tests alone.
+	executionData.setFrom(files(
+			layout.buildDirectory.file('jacoco/test.exec'),
+			layout.buildDirectory.file('jacoco/integrationTest.exec')
+	).filter { it.exists() })
+	reports {
+		xml.required = true
+		html.required = true
+	}
 }

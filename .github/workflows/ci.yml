@@ -1,0 +1,193 @@
+# Continuous Integration — Stage 4 Milestone 4
+#
+# Gates (no deploy):
+#   1. Unit tests
+#   2. Integration tests (against compose infra)
+#   3. Jacoco coverage + SonarQube Community Edition analysis
+#   4. Boot jar build
+#   5. Docker image build (not pushed)
+#
+# SonarQube CE runs in Docker (compose profile "sonar"). No SonarCloud account
+# or GitHub secrets required — CI bootstraps an analysis token on a fresh instance.
+
+name: CI
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Unit → Integration → SonarQube CE → Build → Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - name: Grant Gradle wrapper execute permission
+        run: chmod +x gradlew
+
+      # ------------------------------------------------------------------
+      # 1. Unit tests (no Docker)
+      # ------------------------------------------------------------------
+      - name: Unit tests
+        run: ./gradlew test --console=plain
+
+      # ------------------------------------------------------------------
+      # 2. Integration tests (Docker infra on localhost)
+      # ------------------------------------------------------------------
+      - name: Create CI .env for compose
+        working-directory: .
+        run: |
+          cat > .env <<'EOF'
+          POSTGRES_USER=hms_user
+          POSTGRES_PASSWORD=hms_local_password
+          POSTGRES_DB=hotel_management
+          POSTGRES_PORT=5432
+          REDIS_PORT=6379
+          ELASTICSEARCH_PORT=9200
+          ELASTICSEARCH_URI=http://localhost:9200
+          KIBANA_PORT=5601
+          KAFKA_PORT=9092
+          KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+          KAFKA_UI_PORT=8081
+          APP_PORT=8080
+          SONARQUBE_PORT=9000
+          EOF
+          sed -i 's/^[[:space:]]*//' .env
+
+      - name: Start infrastructure (Postgres, Redis, ES, Kafka)
+        working-directory: .
+        run: docker compose up -d db redis elasticsearch kafka
+
+      - name: Wait for healthy infrastructure
+        working-directory: .
+        run: |
+          echo "Waiting for compose services to become healthy..."
+          for i in $(seq 1 60); do
+            db=$(docker inspect -f '{{.State.Health.Status}}' hms_postgres 2>/dev/null || echo starting)
+            redis=$(docker inspect -f '{{.State.Health.Status}}' hms_redis 2>/dev/null || echo starting)
+            es=$(docker inspect -f '{{.State.Health.Status}}' hms_elasticsearch 2>/dev/null || echo starting)
+            kafka=$(docker inspect -f '{{.State.Health.Status}}' hms_kafka 2>/dev/null || echo starting)
+            echo "attempt $i: db=$db redis=$redis es=$es kafka=$kafka"
+            if [ "$db" = healthy ] && [ "$redis" = healthy ] && [ "$es" = healthy ] && [ "$kafka" = healthy ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Infra did not become healthy in time"
+          docker compose ps
+          docker compose logs --tail=80
+          exit 1
+
+      - name: Create Elasticsearch hotels index + alias
+        working-directory: .
+        run: |
+          curl -fsS -X PUT "http://localhost:9200/hotels_v1" \
+            -H 'Content-Type: application/json' \
+            --data-binary @es/hotels-index.json
+
+      - name: Integration tests
+        run: ./gradlew integrationTest --console=plain
+        env:
+          POSTGRES_USER: hms_user
+          POSTGRES_PASSWORD: hms_local_password
+          POSTGRES_DB: hotel_management
+          POSTGRES_PORT: '5432'
+          REDIS_HOST: localhost
+          REDIS_PORT: '6379'
+          ELASTICSEARCH_URI: http://localhost:9200
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+
+      # ------------------------------------------------------------------
+      # 3. Coverage + SonarQube Community Edition (self-hosted)
+      # ------------------------------------------------------------------
+      - name: Jacoco coverage report
+        run: ./gradlew jacocoTestReport --console=plain
+
+      - name: Start SonarQube Community Edition
+        working-directory: .
+        run: docker compose --profile sonar up -d sonar_db sonarqube
+
+      - name: Wait for SonarQube UP
+        working-directory: .
+        run: |
+          echo "Waiting for SonarQube Community Edition (cold start can take 2–3 minutes)..."
+          for i in $(seq 1 90); do
+            status=$(curl -fsS http://localhost:9000/api/system/status 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || echo STARTING)
+            echo "attempt $i: status=$status"
+            if [ "$status" = "UP" ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          docker compose --profile sonar logs --tail=100 sonarqube
+          exit 1
+
+      - name: Bootstrap SonarQube analysis token
+        id: sonar_token
+        working-directory: .
+        run: |
+          # Fresh CE requires changing the default admin password before token APIs work.
+          curl -fsS -u admin:admin -X POST \
+            "http://localhost:9000/api/users/change_password?login=admin&previousPassword=admin&password=AdminChangeMe1!" \
+            || true
+
+          TOKEN=$(curl -fsS -u admin:AdminChangeMe1! -X POST \
+            "http://localhost:9000/api/user_tokens/generate" \
+            -d "name=ci-${GITHUB_RUN_ID}" \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+
+          if [ -z "$TOKEN" ]; then
+            echo "Failed to create SonarQube token"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: SonarQube Community Edition analysis
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ steps.sonar_token.outputs.token }}
+          SONAR_HOST_URL: http://localhost:9000
+        with:
+          projectBaseDir: backend
+
+      # ------------------------------------------------------------------
+      # 4. Build artifact
+      # ------------------------------------------------------------------
+      - name: Build boot jar
+        run: ./gradlew bootJar -x test --console=plain
+
+      # ------------------------------------------------------------------
+      # 5. Docker image build (not pushed — no deploy in Milestone 4)
+      # ------------------------------------------------------------------
+      - name: Docker build (no push)
+        working-directory: .
+        run: docker build -t hotel-booking-api:${{ github.sha }} ./backend
+
+      - name: Tear down infrastructure
+        if: always()
+        working-directory: .
+        run: docker compose --profile sonar --profile app down -v

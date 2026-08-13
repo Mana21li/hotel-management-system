@@ -3,7 +3,8 @@ spring:
     name: hotel-booking-api
 
   datasource:
-    url: jdbc:postgresql://localhost:${POSTGRES_PORT:5432}/${POSTGRES_DB:hotel_management}
+    # POSTGRES_HOST defaults to localhost (app on Mac); the app container overrides it to "db".
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:hotel_management}
     username: ${POSTGRES_USER:hms_user}
     password: ${POSTGRES_PASSWORD:hms_local_password}
     driver-class-name: org.postgresql.Driver
