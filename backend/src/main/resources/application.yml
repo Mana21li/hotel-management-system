@@ -3,7 +3,8 @@ spring:
     name: hotel-booking-api
 
   datasource:
-    url: jdbc:postgresql://localhost:${POSTGRES_PORT:5432}/${POSTGRES_DB:hotel_management}
+    # POSTGRES_HOST defaults to localhost (app on Mac); the app container overrides it to "db".
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:hotel_management}
     username: ${POSTGRES_USER:hms_user}
     password: ${POSTGRES_PASSWORD:hms_local_password}
     driver-class-name: org.postgresql.Driver
@@ -34,6 +35,24 @@ spring:
   elasticsearch:
     uris: ${ELASTICSEARCH_URI:http://localhost:9200}
 
+  # Kafka broker (app on Mac → localhost:9092; see docker-compose.yml kafka service).
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        # Include type info in headers so consumers can deserialize to the right class.
+        spring.json.add.type.headers: true
+    consumer:
+      # Overridden per @KafkaListener (notification / analytics / recommendation groups).
+      group-id: hotel-booking-api
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.hotelbooking.*
+
 # Search index configuration (alias — not the versioned physical index name).
 search:
   elasticsearch:
@@ -46,9 +65,31 @@ booking:
     wait-seconds: 3    # how long a request waits for another booking to finish
     lease-seconds: 30  # auto-release if the holder crashes (TTL safety net)
 
+# Topic names / partition counts (declared as NewTopic beans in KafkaConfig).
+app:
+  kafka:
+    topics:
+      booking-events:
+        partitions: 3
+      hotel-events:
+        partitions: 3
+    consumer-groups:
+      notification: notification-group
+      analytics: analytics-group
+      recommendation: recommendation-group
+      hotel-search: hotel-search-group
+    retryable:
+      # Non-blocking @RetryableTopic (attempts includes the first try)
+      attempts: 3
+      delay-ms: 200
+  outbox:
+    poll-interval-ms: 500
+    batch-size: 50
+
 server:
   port: 8080
 
 logging:
   level:
     org.hibernate.SQL: debug
+    com.hotelbooking.kafka.consumer: INFO

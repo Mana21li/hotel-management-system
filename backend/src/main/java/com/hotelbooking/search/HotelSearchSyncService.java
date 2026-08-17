@@ -56,6 +56,28 @@ public class HotelSearchSyncService {
       ORDER BY h.hotel_id
       """;
 
+    private static final String INDEXING_SQL_BY_ID = """
+      SELECT
+          h.hotel_id,
+          h.name,
+          h.description,
+          h.address_line,
+          h.city_id,
+          c.name AS city_name,
+          h.star_rating,
+          h.is_active,
+          h.created_at,
+          h.updated_at,
+          COALESCE(MIN(r.nightly_price), 0) AS min_nightly_price
+      FROM hotels h
+      JOIN cities c ON c.city_id = h.city_id
+      LEFT JOIN rooms r ON r.hotel_id = h.hotel_id AND r.is_active = TRUE
+      WHERE h.hotel_id = ?
+      GROUP BY
+          h.hotel_id, h.name, h.description, h.address_line, h.city_id, c.name,
+          h.star_rating, h.is_active, h.created_at, h.updated_at
+      """;
+
     private final JdbcTemplate jdbcTemplate;
     private final ElasticsearchClient elasticsearchClient;
     private final String hotelsIndexAlias;
@@ -111,6 +133,30 @@ public class HotelSearchSyncService {
         int indexed = documents.size() - failures;
         log.info("Reindex complete: read={}, indexed={}, failures={}", documents.size(), indexed, failures);
         return new ReindexResult(documents.size(), indexed, failures);
+    }
+
+    /**
+     * Loads one denormalized hotel from Postgres and upserts it into Elasticsearch.
+     * Used by the Kafka {@code HotelUpserted} consumer (incremental sync).
+     */
+    public void indexHotelById(Long hotelId) {
+        List<HotelSearchDocument> documents =
+                jdbcTemplate.query(INDEXING_SQL_BY_ID, this::mapRow, hotelId);
+        if (documents.isEmpty()) {
+            throw new IllegalArgumentException("Hotel not found for search sync: " + hotelId);
+        }
+        HotelSearchDocument doc = documents.getFirst();
+        try {
+            elasticsearchClient.index(i -> i
+                    .index(hotelsIndexAlias)
+                    .id(String.valueOf(doc.hotelId()))
+                    .document(doc)
+                    .refresh(Refresh.WaitFor));
+            log.info("Indexed hotelId={} into alias={}", hotelId, hotelsIndexAlias);
+        } catch (Exception ex) {
+            log.error("Elasticsearch index failed for hotelId={}", hotelId, ex);
+            throw SearchServiceUnavailableException.from(ex);
+        }
     }
 
     private HotelSearchDocument mapRow(ResultSet rs, int rowNum) throws SQLException {

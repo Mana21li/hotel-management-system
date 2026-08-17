@@ -1,459 +1,285 @@
-# Elasticsearch Search Service
+# Elasticsearch in the Hotel Booking System
 
-PostgreSQL remains the **source of truth**. Elasticsearch is a **search read model** rebuilt from Postgres when needed.
+Elasticsearch runs alongside PostgreSQL for **one job**:
 
-## Roadmap
+1. **Hotel discovery / search** — full-text query, filters, sort, pagination, typo tolerance (`GET /api/search/hotels`)
 
-| Milestone | Status | What |
-|---|---|---|
-| 1. Docker ES + Kibana | ✅ | Local cluster, health checks |
-| 2. Index mappings | ✅ | `hotels_v1` index + `hotels` alias |
-| 3. Postgres → ES sync | ✅ | Batch reindex via admin API |
-| 4. Search API (basic) | ✅ | `GET /api/search/hotels?q=` |
-| 5. Filters, sort, pagination | ✅ | city, stars, price |
-| 6. Fuzzy + production polish | ✅ | typos, error handling |
+PostgreSQL remains the **source of truth**. Elasticsearch is a **search read model** (a denormalized copy optimized for search). If ES is empty or stale, rebuild it from Postgres.
 
 ---
 
-## Milestone 1 — Docker infrastructure
+## Mental model
 
-### Start the stack
+| Store | Role |
+|---|---|
+| **PostgreSQL** | Transactions, bookings, normalized hotel/city/room data |
+| **Redis** | Cache + distributed locks |
+| **Elasticsearch** | Search / discovery only |
 
-```bash
-docker compose up -d
-docker compose ps
+```text
+Write path (truth):     Client → Spring → Postgres
+Search path (discovery): Client → Spring → Elasticsearch
+Sync path:              Postgres → (reindex) → Elasticsearch
 ```
 
-You should see `hms_elasticsearch` (healthy) and `hms_kibana` (running).
+Search never hits Postgres. Booking never depends on Elasticsearch.
 
-### Verify Elasticsearch
+---
+
+## Infrastructure
 
 ```bash
-# Cluster health (yellow is OK for single-node — no replica shards)
+docker compose up -d elasticsearch kibana
+docker compose ps   # hms_elasticsearch healthy, hms_kibana running
+```
+
+| Setting | Value | Purpose |
+|---|---|---|
+| Container | `hms_elasticsearch` | Search engine |
+| Image | `elasticsearch:8.15.3` | Pinned |
+| Host port | `9200` | App + curl connect here |
+| `discovery.type` | `single-node` | Local cluster of one |
+| Security | disabled locally | Prod must enable TLS/auth |
+| Heap | `512m` | Cap RAM |
+| Volume | `hms_esdata` | Persist index data |
+| Kibana | `http://localhost:5601` | Optional UI / Dev Tools |
+
+Spring Boot:
+
+```yaml
+spring:
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URI:http://localhost:9200}
+
+search:
+  elasticsearch:
+    hotels-index-alias: hotels
+    fuzzy-enabled: true
+    max-query-length: 200
+```
+
+### Verify cluster
+
+```bash
 curl -s 'http://localhost:9200/_cluster/health?pretty'
-
-# Node info
-curl -s http://localhost:9200
-
-# List indices (empty until Milestone 2/3 — ignore .internal.* system indices)
 curl -s 'http://localhost:9200/_cat/indices?v'
 ```
 
-Expected health response (key fields):
-
-```json
-{
-  "cluster_name" : "docker-cluster",
-  "status" : "yellow",
-  "number_of_nodes" : 1
-}
-```
-
-**Why `yellow` not `green`?** On a single node, replica shards cannot be assigned — Elasticsearch still works; this is normal for local dev.
-
-### Kibana (optional UI)
-
-Open in browser: [http://localhost:5601](http://localhost:5601)
-
-Use **Dev Tools** → Console to run:
-
-```json
-GET _cluster/health
-```
-
-### Architecture (current)
-
-```text
-PostgreSQL (source of truth)     Redis (cache + locks)
-        │                              │
-        │  (sync — Milestone 3)        │
-        ▼                              │
-Elasticsearch (search read model) ◄────┘
-        ▲
-        │  (search queries — Milestone 4+)
-   Spring Boot Search API
-```
-
-### Docker config explained
-
-| Setting | Purpose |
-|---|---|
-| `discovery.type=single-node` | One ES node; no cluster formation |
-| `xpack.security.enabled=false` | No TLS/password for local dev only |
-| `ES_JAVA_OPTS=-Xms512m -Xmx512m` | Limit RAM usage |
-| `hms_esdata` volume | Persist index data across restarts |
-| `healthcheck` on `/_cluster/health` | Compose waits until ES is queryable |
-
-### Stop / reset
-
-```bash
-docker compose down          # keeps ES index data in volume
-docker compose down -v       # wipes ALL volumes including ES + Postgres data
-```
+Single-node may show **yellow** (replicas cannot be assigned) or **green** when `number_of_replicas: 0`. Both are fine for local learning.
 
 ---
 
-## Milestone 2 — Index mapping design
+## Vocabulary
 
-The mapping is the search schema. Defined explicitly in `es/hotels-index.json` — never rely on
-Elasticsearch's dynamic guessing for a production index.
-
-### text vs keyword (the core decision)
-
-| Type | Analyzed? | Good for | Example |
-|---|---|---|---|
-| `text` | Yes (tokenized) | Full-text / fuzzy search | search "taj" → "The Taj Seaside" |
-| `keyword` | No (exact) | Filter, sort, aggregations | `cityName = "Mumbai"` |
-
-Fields that need both use a **multi-field**: `name` (text) + `name.keyword` (keyword).
-
-### Custom analyzer: `hotel_text_analyzer`
-
-`standard` tokenizer + `lowercase` + `asciifolding`:
-
-```text
-"The Taj Seaside Café"  →  [the, taj, seaside, cafe]
-```
-
-So searches are case-insensitive and accent-insensitive.
-
-### Field design (denormalized from hotels + cities + rooms)
-
-| Field | Type | Purpose |
+| Term | Meaning | Hotel analogy |
 |---|---|---|
-| `hotelId` | long | Identity → look up real row in Postgres |
-| `name` | text + keyword | Search + sort/exact |
-| `description` | text | Full-text search |
-| `addressLine` | text | Searchable |
-| `cityId` | long | Exact filter |
-| `cityName` | text + keyword | Search + filter/sort (denormalized) |
-| `starRating` | integer | Range filter + sort |
-| `minNightlyPrice` | scaled_float (×100) | Range filter + sort (from rooms) |
-| `active` | boolean | Filter inactive hotels |
-| `createdAt` / `updatedAt` | date | Tie-break sort, freshness |
+| **Index** | Search “table” | `hotels_v1` |
+| **Document** | One JSON row | One hotel |
+| **Mapping** | Schema + analyzers | `es/hotels-index.json` |
+| **Analyzer** | How text is tokenized | `"The Taj Café"` → `[the, taj, cafe]` |
+| **`text` vs `keyword`** | Full-text vs exact | search vs filter/sort |
+| **Alias** | Stable name over physical index | App uses `hotels`, data in `hotels_v1` |
+| **Bulk API** | Many writes in one request | Reindex all hotels |
+| **`_id`** | Document primary key | We use `hotelId` (upsert) |
 
-Notes:
-- **`scaled_float`** stores money as an integer internally — no float rounding.
-- **`dynamic: strict`** rejects unexpected fields (catches sync bugs early).
+---
 
-### Alias + versioned index (zero-downtime pattern)
+## Part 1 — Index mapping
 
-Physical index is **`hotels_v1`**; the app uses the alias **`hotels`**.
-To change the mapping later: build `hotels_v2`, reindex, then swing the alias atomically.
+Defined in `es/hotels-index.json`. Explicit mapping + `dynamic: strict` (unknown fields are **rejected**, not guessed).
+
+### text vs keyword
+
+| Type | Good for | Example |
+|---|---|---|
+| `text` | Full-text / fuzzy | `q=taj` → The Taj Seaside |
+| `keyword` | Exact filter / sort | `cityName.keyword = "Mumbai"` |
+
+Multi-fields: `name` (text) + `name.keyword`.
+
+### Custom analyzer `hotel_text_analyzer`
+
+`standard` + `lowercase` + `asciifolding` → case- and accent-insensitive search.
+
+### Denormalized fields
+
+Search documents include `cityName` and `minNightlyPrice` (joined/computed from Postgres at sync time). ES does not JOIN tables at query time.
+
+### Alias + versioned index
+
+| Name | Role |
+|---|---|
+| `hotels_v1` | Physical index (data) |
+| `hotels` | Alias used by the app |
+
+Zero-downtime mapping change later: build `hotels_v2`, reindex, swing alias.
+
+### Create / recreate index
 
 ```bash
-# Create index + alias from the mapping file
-curl -s -X PUT 'http://localhost:9200/hotels_v1' \
-  -H 'Content-Type: application/json' \
-  --data-binary @es/hotels-index.json
-
-# Verify
-curl -s 'http://localhost:9200/_cat/indices/hotels_v1?v'
-curl -s 'http://localhost:9200/hotels/_mapping?pretty'
-curl -s 'http://localhost:9200/_alias/hotels?pretty'
-
-# Test the analyzer
-curl -s -X POST 'http://localhost:9200/hotels/_analyze?pretty' \
-  -H 'Content-Type: application/json' \
-  -d '{"analyzer":"hotel_text_analyzer","text":"The Taj Seaside Café"}'
-```
-
-`number_of_replicas: 0` keeps a single-node index **green** (replicas can't be assigned with one node).
-
-### Recreate the index (if needed)
-
-```bash
-curl -s -X DELETE 'http://localhost:9200/hotels_v1'
 curl -s -X PUT 'http://localhost:9200/hotels_v1' \
   -H 'Content-Type: application/json' --data-binary @es/hotels-index.json
+
+curl -s 'http://localhost:9200/hotels/_mapping?pretty'
+curl -s 'http://localhost:9200/_alias/hotels?pretty'
 ```
 
 ---
 
-## Milestone 3 — Postgres → Elasticsearch sync
+## Part 2 — Postgres → Elasticsearch sync
 
-### Business problem
+### Problem
 
-The `hotels` index is empty until we copy data from Postgres. Search cannot work without sync.
+An empty index cannot serve search. Data must be **copied** from Postgres into ES.
 
-### Design: full batch reindex (not Kafka yet)
-
-| Approach | When | This project |
-|---|---|---|
-| **Full reindex** | Rebuild entire index from Postgres | ✅ Milestone 3 |
-| **Incremental sync** | Update one hotel on change | Later (or via Kafka) |
-
-Flow:
+### Pattern A: full batch reindex
 
 ```text
 POST /api/admin/search/hotels/reindex
         │
         ▼
-JdbcTemplate → denormalized SQL (hotels + cities + min room price)
+JdbcTemplate → denormalized SQL (hotels + cities + MIN room price)
         │
         ▼
-Bulk API → index into alias "hotels" (_id = hotelId, upsert)
+Bulk API → alias "hotels" (_id = hotelId, upsert, refresh=wait_for)
 ```
 
-### Why `_id = hotelId`?
+| Decision | Why |
+|---|---|
+| JDBC SQL (not JPA entity) | One projection query with JOIN + `MIN(price)` |
+| `_id = hotelId` | Reindex is idempotent (update, not duplicate) |
+| Index active + inactive | Search filters `active=true`; reactivation is simpler |
+| Admin POST | Expensive rebuild — not a public API |
 
-Re-running reindex **updates** existing documents instead of duplicating them — idempotent and safe to retry.
+Use for: empty index bootstrap, disaster recovery, mapping rebuilds.
 
-### Denormalized SQL (why not JPA entities?)
+### Pattern B: Kafka-driven incremental sync (done)
 
-One query joins `hotels`, `cities`, and `MIN(rooms.nightly_price)` — exactly what the search document needs. JPA entities would require multiple queries or DTO projections; JDBC keeps the sync SQL explicit.
+```text
+POST /api/admin/search/hotels/{id}/sync
+  (or booking TX enqueues HotelUpserted)
+        │
+        ▼
+Transactional outbox → hotel-events
+        │
+        ▼
+HotelSearchEventConsumer → indexHotelById(hotelId) → ES upsert
+```
+
+Full reindex remains the “rebuild from scratch” tool; Kafka keeps the read model fresh between rebuilds.
 
 ### Verify sync
 
 ```bash
-# Start app (Gradle — not IDE bin/)
-cd backend && ./gradlew bootRun
-
-# Trigger reindex
+# Full rebuild
 curl -s -X POST http://localhost:8080/api/admin/search/hotels/reindex | jq .
-
-# Expected: readFromPostgres=5, indexed=5, failures=0 (seed data has 5 hotels)
-
-# Confirm documents in ES
 curl -s 'http://localhost:9200/hotels/_count?pretty'
-curl -s 'http://localhost:9200/hotels/_search?pretty' -H 'Content-Type: application/json' \
-  -d '{"query":{"match_all":{}},"size":3}'
+
+# Incremental (outbox → Kafka → ES)
+curl -s -X POST http://localhost:8080/api/admin/search/hotels/1/sync | jq .
 ```
 
-### Integration test
-
-```bash
-./gradlew test --tests "com.hotelbooking.search.HotelSearchSyncIT"
-```
-
-Requires Postgres + Elasticsearch + Redis running.
+Expected with seed data after full reindex: 5 documents.
 
 ---
 
-## Milestone 4 — Basic search API
+## Part 3 — Search API
 
-### Business problem
-
-Users need to **discover** hotels by name, city, or description — not just fetch by ID.
-Postgres `LIKE` queries do not scale; Elasticsearch is the query engine here.
-
-### Architecture
+### Endpoint
 
 ```text
-GET /api/search/hotels?q=taj
-        │
-        ▼
-HotelSearchService → Elasticsearch (alias "hotels")
-        │
-        ▼
-JSON hits (denormalized snapshot — no Postgres on this path)
+GET /api/search/hotels?q=&cityId=&minStars=&maxPrice=&sort=&page=&size=
 ```
-
-**Important:** Search reads ES only. Booking and hotel detail APIs still use Postgres.
 
 ### Query design
 
-```json
-{
-  "query": {
-    "bool": {
-      "must": {
-        "multi_match": {
-          "query": "taj",
-          "fields": ["name^3", "cityName^2", "description", "addressLine"],
-          "type": "best_fields"
-        }
-      },
-      "filter": [{ "term": { "active": true } }]
-    }
-  }
-}
-```
-
-| Piece | Why |
-|---|---|
-| `multi_match` | Search across several text fields at once |
-| `name^3` | Boost hotel name (3× relevance) |
-| `cityName^2` | City is second-most important |
-| `filter: active=true` | Inactive hotels indexed but hidden from search |
-| Blank `q` | `match_all` + active filter → list all active hotels |
+- **`multi_match`** on `name^3`, `cityName^2`, `description`, `addressLine`
+- **Filters** in `bool.filter` (`active`, `cityId`, stars, price) — no scoring cost
+- **Sort**: relevance, price, stars
+- **Pagination**: `from = page × size`
+- **Fuzzy**: exact match boosted + `fuzziness: AUTO` for typos
+- **Errors**: ES down / missing index → **503** (booking API still works)
 
 ### Verify search
 
 ```bash
-# Reindex first (if index is empty)
-curl -s -X POST http://localhost:8080/api/admin/search/hotels/reindex | jq .
-
-# Search by hotel name
 curl -s 'http://localhost:8080/api/search/hotels?q=taj' | jq .
-
-# Search by city
-curl -s 'http://localhost:8080/api/search/hotels?q=mumbai' | jq .
-curl -s 'http://localhost:8080/api/search/hotels?q=delhi' | jq .
-
-# List all active hotels (no query)
-curl -s 'http://localhost:8080/api/search/hotels' | jq .
-```
-
-Expected for `q=taj`: one hit — **The Taj Seaside** in Mumbai.
-
-### Integration test
-
-```bash
-./gradlew test --tests "com.hotelbooking.search.HotelSearchIT"
+curl -s 'http://localhost:8080/api/search/hotels?cityId=2&sort=price_asc' | jq .
+curl -s 'http://localhost:8080/api/search/hotels?q=tajj' | jq .   # typo still finds Taj
 ```
 
 ---
 
-## Milestone 5 — Filters, sort, pagination
+## Key classes
 
-### Business problem
-
-Users rarely search by text alone. Real hotel search combines:
-- **Filters** — city, minimum stars, maximum price
-- **Sort** — cheapest first, highest rated, or relevance
-- **Pagination** — page through large result sets
-
-### API parameters
-
-| Param | Type | Example | ES clause |
-|---|---|---|---|
-| `q` | text | `taj` | `multi_match` (must) |
-| `cityId` | long | `2` | `term` on `cityId` (filter) |
-| `minStars` | 1–5 | `4` | `range` on `starRating` ≥ (filter) |
-| `maxPrice` | number | `5000` | `range` on `minNightlyPrice` ≤ (filter) |
-| `sort` | enum | `price_asc` | sort clause |
-| `page` | int ≥ 0 | `0` | `from = page × size` |
-| `size` | 1–100 | `20` | `size` |
-
-**Sort values:** `relevance` (default), `price_asc`, `price_desc`, `stars_desc`, `stars_asc`
-
-### Why filters go in `bool.filter` (not `must`)
-
-Filters do **not** affect relevance scoring — they only include/exclude documents.
-That is the standard pattern for faceted search (city, price range, stars).
-
-### Verify filters and pagination
-
-```bash
-# Delhi only (cityId=2)
-curl -s 'http://localhost:8080/api/search/hotels?cityId=2' | jq .
-
-# 5-star hotels only
-curl -s 'http://localhost:8080/api/search/hotels?minStars=5' | jq .
-
-# Budget hotels (cheapest room ≤ 5000)
-curl -s 'http://localhost:8080/api/search/hotels?maxPrice=5000' | jq .
-
-# Cheapest first
-curl -s 'http://localhost:8080/api/search/hotels?sort=price_asc&size=3' | jq .
-
-# Page 2 of results (0-based page index)
-curl -s 'http://localhost:8080/api/search/hotels?sort=price_asc&page=1&size=2' | jq .
-
-# Combine text + filters
-curl -s 'http://localhost:8080/api/search/hotels?q=grand&minStars=4' | jq .
-```
-
-Expected:
-- `cityId=2` → **Capital Grand** only
-- `minStars=5` → **The Taj Seaside** + **Manhattan Plaza**
-- `maxPrice=5000` → 3 hotels (Garden City, Capital Grand, Taj)
-- `sort=price_asc&size=1` → **Garden City Inn** (₹2200)
-
-### Integration test
-
-```bash
-./gradlew test --tests "com.hotelbooking.search.HotelSearchIT"
-```
-
----
-
-## Milestone 6 — Fuzzy search + production polish
-
-### Business problem
-
-Users make typos (`tajj`, `manhatan`, `bangalor`). Strict matching returns zero results —
-bad UX. Production search tolerates typos while still ranking exact matches higher.
-
-### Fuzzy query design
-
-Two `should` clauses inside a `bool` (at least one must match):
-
-```json
-{
-  "bool": {
-    "should": [
-      { "multi_match": { "query": "tajj", "fields": ["name^3", ...], "boost": 2 } },
-      { "multi_match": { "query": "tajj", "fields": ["name^3", ...], "fuzziness": "AUTO" } }
-    ],
-    "minimum_should_match": 1
-  }
-}
-```
-
-| Setting | Meaning |
+| Class | Role |
 |---|---|
-| `fuzziness: AUTO` | 0 edits for 1–2 char terms, 1 for 3–5, 2 for 6+ |
-| Exact clause `boost: 2` | Correct spellings outrank fuzzy matches |
-| `fuzzy-enabled: true` | Toggle in `application.yml` |
-
-### Production error handling
-
-| Failure | HTTP | Client message |
-|---|---|---|
-| ES down / connection refused | **503** | Search service is temporarily unavailable |
-| Index missing | **503** | Run reindex admin endpoint |
-| Query too long (>200 chars) | **400** | Query exceeds maximum length |
-| Invalid sort param | **400** | Allowed sort values listed |
-
-**Why 503 not 500?** Search is a separate read model — if ES is down, the booking
-API still works. Clients can retry search; a 503 signals transient failure.
-
-### Verify fuzzy search
-
-```bash
-# Typo in hotel name (extra "j")
-curl -s 'http://localhost:8080/api/search/hotels?q=tajj' | jq .
-
-# Misspelled city
-curl -s 'http://localhost:8080/api/search/hotels?q=bangalor' | jq .
-
-# Misspelled hotel name
-curl -s 'http://localhost:8080/api/search/hotels?q=manhatan' | jq .
-
-# Query too long → 400
-curl -s -o /dev/null -w '%{http_code}\n' \
-  'http://localhost:8080/api/search/hotels?q='"$(python3 -c 'print("a"*201)')"
-```
-
-Expected: typos still return the correct hotels; long query returns `400`.
-
-### Simulate ES unavailable (optional)
-
-```bash
-docker compose stop elasticsearch
-curl -s 'http://localhost:8080/api/search/hotels?q=taj' | jq .   # → 503
-docker compose start elasticsearch
-```
-
-### Integration test
-
-```bash
-./gradlew test --tests "com.hotelbooking.search.HotelSearchIT"
-```
+| `HotelSearchDocument` | ES document shape (denormalized) |
+| `HotelSearchSyncService` | Postgres → bulk index + `indexHotelById` |
+| `HotelSearchEventService` | Enqueue `HotelUpserted` via outbox |
+| `HotelSearchEventConsumer` | Kafka → ES upsert |
+| `HotelSearchAdminController` | `POST .../reindex`, `POST .../{id}/sync` |
+| `HotelSearchService` | ES queries |
+| `HotelSearchController` | `GET /api/search/hotels` |
+| `HotelSearchCriteria` / `HotelSearchSort` | Filters, sort, page |
+| `SearchServiceUnavailableException` | Maps to HTTP 503 |
 
 ---
 
-## Elasticsearch track complete
+## Inspect Elasticsearch
 
-You now have a production-style search read model:
+```bash
+# Health & indices
+curl -s 'http://localhost:9200/_cluster/health?pretty'
+curl -s 'http://localhost:9200/_cat/indices?v'
+curl -s 'http://localhost:9200/_cat/aliases?v'
 
-```text
-PostgreSQL (source of truth)
-        │ batch reindex
-        ▼
-Elasticsearch (hotels alias)  ←── GET /api/search/hotels
+# Count / sample docs
+curl -s 'http://localhost:9200/hotels/_count?pretty'
+curl -s 'http://localhost:9200/hotels/_search?pretty' \
+  -H 'Content-Type: application/json' \
+  -d '{"query":{"match_all":{}},"size":2}'
+
+# Analyzer test
+curl -s -X POST 'http://localhost:9200/hotels/_analyze?pretty' \
+  -H 'Content-Type: application/json' \
+  -d '{"analyzer":"hotel_text_analyzer","text":"The Taj Seaside Café"}'
 ```
 
-**Next up in the roadmap:** Kafka for event-driven sync, then microservices decomposition.
+Kibana Dev Tools: [http://localhost:5601](http://localhost:5601)
+
+---
+
+## Production / interview notes
+
+| Local | Booking.com-scale |
+|---|---|
+| Batch reindex + Kafka `HotelUpserted` | Same patterns + CDC optional |
+| 1 node | Multi-node cluster, replicas, snapshots |
+| Search in monolith | Dedicated search service |
+| Alias `hotels` | Blue/green reindex on mapping changes |
+| 503 if ES down | Circuit breakers, degraded UX, core booking unaffected |
+
+**HLD takeaway:** polyglot persistence — each store owns one concern (truth / cache / search).
+
+---
+
+## Build history (how we learned it)
+
+| Step | What we added |
+|---|---|
+| 1 | Docker ES + Kibana |
+| 2 | Mapping `hotels_v1` + alias `hotels` |
+| 3 | Batch reindex admin API |
+| 4 | Basic `GET /api/search/hotels?q=` |
+| 5 | Filters, sort, pagination |
+| 6 | Fuzzy + 503 / validation polish |
+| 7 | Kafka-driven incremental sync (`hotel-events`) |
+
+---
+
+## Related docs
+
+- Schema: `docs/database-schema-postgres.md`
+- Redis (cache/locks): `docs/redis.md`
+- Kafka (outbox + hotel-events): `docs/kafka.md`
