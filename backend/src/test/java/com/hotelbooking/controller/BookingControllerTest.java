@@ -7,7 +7,7 @@ import com.hotelbooking.exception.InvalidBookingDateException;
 import com.hotelbooking.exception.RoomNotAvailableException;
 import com.hotelbooking.exception.RoomNotFoundException;
 import com.hotelbooking.exception.UserNotFoundException;
-import com.hotelbooking.service.BookingService;
+import com.hotelbooking.booking.BookingServiceGateway;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -45,7 +45,7 @@ class BookingControllerTest {
     private ObjectMapper objectMapper;
 
     @MockitoBean
-    private BookingService bookingService;
+    private BookingServiceGateway bookingServiceGateway;
 
     private static final LocalDate CHECK_IN = LocalDate.now().plusDays(1);
     private static final LocalDate CHECK_OUT = LocalDate.now().plusDays(3);
@@ -72,7 +72,7 @@ class BookingControllerTest {
 
     @Test
     void createBooking_returns201WithLocationAndBody() throws Exception {
-        when(bookingService.createBooking(any(CreateBookingRequest.class)))
+        when(bookingServiceGateway.createBooking(any(CreateBookingRequest.class)))
                 .thenReturn(sampleResponse());
 
         mockMvc.perform(post("/api/bookings")
@@ -117,7 +117,7 @@ class BookingControllerTest {
 
     @Test
     void createBooking_returns400_whenServiceThrowsInvalidDate() throws Exception {
-        when(bookingService.createBooking(any(CreateBookingRequest.class)))
+        when(bookingServiceGateway.createBooking(any(CreateBookingRequest.class)))
                 .thenThrow(new InvalidBookingDateException("checkOutDate must be after checkInDate"));
 
         mockMvc.perform(post("/api/bookings")
@@ -130,7 +130,7 @@ class BookingControllerTest {
 
     @Test
     void createBooking_returns404_whenUserNotFound() throws Exception {
-        when(bookingService.createBooking(any(CreateBookingRequest.class)))
+        when(bookingServiceGateway.createBooking(any(CreateBookingRequest.class)))
                 .thenThrow(new UserNotFoundException(1L));
 
         mockMvc.perform(post("/api/bookings")
@@ -143,7 +143,7 @@ class BookingControllerTest {
 
     @Test
     void createBooking_returns404_whenRoomNotFound() throws Exception {
-        when(bookingService.createBooking(any(CreateBookingRequest.class)))
+        when(bookingServiceGateway.createBooking(any(CreateBookingRequest.class)))
                 .thenThrow(new RoomNotFoundException(10L));
 
         mockMvc.perform(post("/api/bookings")
@@ -155,7 +155,7 @@ class BookingControllerTest {
 
     @Test
     void createBooking_returns409_whenRoomNotAvailable() throws Exception {
-        when(bookingService.createBooking(any(CreateBookingRequest.class)))
+        when(bookingServiceGateway.createBooking(any(CreateBookingRequest.class)))
                 .thenThrow(new RoomNotAvailableException(10L, CHECK_IN, CHECK_OUT));
 
         mockMvc.perform(post("/api/bookings")

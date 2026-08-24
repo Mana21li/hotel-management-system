@@ -42,6 +42,9 @@ venv/
 __pycache__/
 *.pyc
 
+# Heap dumps (never commit — these can be hundreds of MB)
+*.hprof
+
 # Build output
 dist/
 build/
@@ -53,3 +56,21 @@ target/
 backend/.gradle/
 backend/build/
 backend/bin/
+notification-service/.gradle/
+notification-service/build/
+notification-service/bin/
+search-service/.gradle/
+search-service/build/
+search-service/bin/
+analytics-service/.gradle/
+analytics-service/build/
+analytics-service/bin/
+recommendation-service/.gradle/
+recommendation-service/build/
+recommendation-service/bin/
+hotel-service/.gradle/
+hotel-service/build/
+hotel-service/bin/
+booking-service/.gradle/
+booking-service/build/
+booking-service/bin/

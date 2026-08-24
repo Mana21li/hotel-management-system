@@ -1,5 +1,5 @@
 # =============================================================================
-# Multi-stage build for the hotel-booking-api monolith.
+# Multi-stage build for the public API strangler/gateway (:8080).
 #
 # Stage 1 (build): full JDK + Gradle wrapper → produces the Spring Boot fat jar.
 # Stage 2 (runtime): slim JRE only → smaller image, smaller attack surface.

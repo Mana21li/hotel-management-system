@@ -19,32 +19,13 @@ repositories {
 }
 
 dependencies {
-	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.boot:spring-boot-starter-web'
-	// Caching: the Spring cache abstraction (@Cacheable/@CacheEvict) backed by Redis.
-	implementation 'org.springframework.boot:spring-boot-starter-cache'
-	implementation 'org.springframework.boot:spring-boot-starter-data-redis'
-	// Distributed locks (SET NX + lease renewal + owner-only unlock via Lua scripts).
-	implementation 'org.redisson:redisson:3.40.2'
-	// Elasticsearch Java API client (search read model sync + queries in later milestones).
-	implementation 'org.springframework.boot:spring-boot-starter-data-elasticsearch'
-	// Kafka producer/consumer (event-driven side effects after booking).
-	implementation 'org.springframework.kafka:spring-kafka'
-	testImplementation 'org.springframework.kafka:spring-kafka-test'
-	compileOnly 'org.projectlombok:lombok'
-	runtimeOnly 'org.postgresql:postgresql'
-	annotationProcessor 'org.projectlombok:lombok'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
-	testCompileOnly 'org.projectlombok:lombok'
+	testImplementation 'org.awaitility:awaitility:4.2.2'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-	testAnnotationProcessor 'org.projectlombok:lombok'
 }
 
-/**
- * Unit tests only (*Test). Fast, no Docker required.
- * Integration tests (*IT + context smoke) run via {@code integrationTest}.
- */
 tasks.named('test') {
 	useJUnitPlatform()
 	filter {
@@ -54,23 +35,29 @@ tasks.named('test') {
 	finalizedBy jacocoTestReport
 }
 
-/**
- * Integration tests against live Docker infra (Postgres, Redis, ES, Kafka).
- * Local: {@code docker compose up -d} then {@code ./gradlew integrationTest}
- * CI: compose is started by the GitHub Actions workflow before this task.
- */
 tasks.register('integrationTest', Test) {
-	description = 'Runs *IT tests against Docker infrastructure'
+	description = 'Smoke-loads the strangler context (ITs live in extracted services)'
 	group = 'verification'
 	shouldRunAfter test
 	useJUnitPlatform()
 	testClassesDirs = sourceSets.test.output.classesDirs
 	classpath = sourceSets.test.runtimeClasspath
 	filter {
-		includeTestsMatching '*IT'
 		includeTestsMatching 'HotelBookingApiApplicationTests'
 	}
 	finalizedBy jacocoTestReport
+}
+
+tasks.register('e2eTest', Test) {
+	description = 'Runs *E2EIT against extracted services via the :8080 strangler'
+	group = 'verification'
+	shouldRunAfter integrationTest
+	useJUnitPlatform()
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	filter {
+		includeTestsMatching '*E2EIT'
+	}
 }
 
 jacoco {
@@ -78,8 +65,6 @@ jacoco {
 }
 
 tasks.named('jacocoTestReport') {
-	// Aggregate whatever .exec files exist (unit and/or integration).
-	// Do NOT dependOn integrationTest — that would force Docker when running unit tests alone.
 	executionData.setFrom(files(
 			layout.buildDirectory.file('jacoco/test.exec'),
 			layout.buildDirectory.file('jacoco/integrationTest.exec')

@@ -1,8 +1,9 @@
 # Stage 4 — Monolith to Microservices (Learnings)
 
 This doc captures **what I learned**, not implementation steps. Read it to refresh the
-mental models behind the migration. Status: Milestones 1–2 (analysis + design) done;
-no code has been split yet.
+mental models behind the migration. Status: Milestones 1–6 done. Public traffic still
+enters `:8080` (strangler); Notification, Search, Analytics, Recommendation, Hotel,
+and Booking run as separate processes.
 
 ---
 
@@ -298,12 +299,179 @@ This project is the same architecture at learning scale.
 
 ---
 
-## Extraction order (planned, not done)
+## Milestone 5 — Extract Notification Service (done)
 
-1. **Notification first** — stable event input, no DB writes, log-stub behavior,
-   booking path never waits on it. Minimal blast radius.
-2. **Search next** — already a read model, but touches ES + admin APIs.
-3. **Booking last** — locks + EXCLUDE + outbox make it the highest-risk move.
+### Why Notification first
+
+- Consumes stable Kafka input (`BookingCreated`) — no new REST coupling to Booking
+- No Postgres writes today (log stub)
+- Booking path never waits on it — lowest blast radius
+
+### What moved
+
+```text
+Before:  one process produces + consumes notification
+After:   booking-service produces (outbox) → Kafka → notification-service consumes
+```
+
+| Stays with Booking (now `booking-service`) | Moves to notification-service |
+|---|---|
+| Booking APIs, outbox, `BookingCreated` publish | `NotificationBookingConsumer`, `@RetryableTopic`, DLT handling |
+| — | `GET /internal/stats` (test visibility) |
+
+Event JSON contract unchanged — same `BookingCreatedEvent` field names/types.
+
+### How to verify locally
+
+```bash
+docker compose up -d
+cd notification-service && ./gradlew bootRun &
+cd backend && ./gradlew bootRun
+
+# E2E
+cd backend && ./gradlew e2eTest
+
+# Or full stack in Docker
+docker compose --profile app up -d --build
+curl -s -X POST http://localhost:8080/api/bookings -H 'Content-Type: application/json' \
+  -d '{"userId":1,"roomId":20,"checkInDate":"2036-01-01","checkOutDate":"2036-01-03"}'
+curl -s http://localhost:8082/internal/stats
+```
+
+### Test layers
+
+| Layer | Where | Proves |
+|---|---|---|
+| Unit | `NotificationStatsControllerTest` | HTTP stats endpoint |
+| Service IT | `NotificationBookingConsumerIT`, `BookingEventDltIT` | Kafka consume + retry/DLT |
+| Cross-service E2E | `BookingNotificationE2EIT` (`backend/` strangler) | Booking → outbox → Kafka → notification |
+
+---
+
+## Milestone 6 — Extract Search Service (done)
+
+### Why Search next
+
+Search is already a CQRS read model: Postgres writes elsewhere, Elasticsearch +
+`HotelUpserted` live here. Extracting it isolates search failures from booking.
+
+Public paths stay on `:8080` via a **strangler proxy** so clients do not change
+before an API Gateway exists.
+
+```text
+Client → strangler :8080 /api/search/*  →  search-service :8083 (ES)
+Booking TX → outbox HotelUpserted → Kafka hotel-events → search-service consumer → ES
+```
+
+| Stays on `:8080` / booking / hotel | Moves to search-service |
+|---|---|
+| Public search paths on `:8080` | ES queries, batch reindex, incremental `HotelUpserted` consumer |
+| Public paths `GET /api/search/hotels`, admin reindex/sync | Real implementations + `GET /internal/stats` |
+| Redis locks stay in `booking-service` | Catalog REST → hotel-service for ES reindex (no JDBC in search-service) |
+
+### Design choices worth defending
+
+| Choice | Why |
+|---|---|
+| Strangler proxy on `:8080` | Keep client URLs stable; a real API Gateway comes later |
+| **One** consumer group `hotel-search-group` | Same group ≠ fan-out. Only search-service may join it |
+| `spring.json.use.type.headers: false` + default type | Producer and consumer Java packages differ |
+| Admin `.../sync` publishes Kafka **directly** | Not a dual-write with a domain TX; outbox stays with Booking |
+| Catalog REST (not shared JDBC) | search-service has no datasource; hotel-service owns `hotel_catalog` |
+
+### How to verify locally
+
+```bash
+docker compose up -d
+# create hotels_v1 + alias if missing (see docs/elasticsearch.md)
+
+cd search-service && ./gradlew test integrationTest
+cd search-service && ./gradlew bootRun &     # :8083
+cd notification-service && ./gradlew bootRun &  # :8082, needed for *E2EIT*
+cd backend && ./gradlew test integrationTest e2eTest
+
+# Must not run a stale :8080 process that still joins hotel-search-group.
+```
+
+### Test layers
+
+| Layer | Where | Proves |
+|---|---|---|
+| Unit | `SearchStatsControllerTest` | HTTP stats endpoint |
+| Service IT | `HotelSearchIT`, `HotelSearchSyncIT`, `HotelSearchEventConsumerIT` | ES query, reindex, Kafka → ES |
+| Cross-service E2E | `SearchApiProxyE2EIT` (`backend/` strangler) | Client path → proxy → search-service |
+
+Remaining in Milestone 6: none — Analytics, Recommendation, Hotel, and Booking are extracted.
+Public APIs still enter via the `:8080` strangler.
+
+### The rest of Milestone 6 (done in the same pass)
+
+| Service | Port | What moved | Public contract |
+|---|---|---|---|
+| Analytics | 8084 | `analytics-group` consumer + unique retry/DLT topics | No product REST; `GET /internal/stats` |
+| Recommendation | 8085 | `recommendation-group` consumer + unique retry/DLT topics | Same |
+| Hotel | 8086 | `GET /api/hotels`, Redis hotel cache | Paths stay on `:8080` via strangler |
+| Booking | 8087 | Lock + EXCLUDE + outbox producer | `POST /api/bookings` stays on `:8080` |
+
+```text
+Client → :8080  ┬─ /api/search/*     → search-service :8083
+                ├─ /api/hotels       → hotel-service :8086
+                └─ POST /api/bookings → booking-service :8087
+                                          └─ outbox → Kafka → notification / analytics / recommendation / search
+```
+
+Booking was last because the lock, the `EXCLUDE` constraint, and the outbox relay must move as one unit. `:8080` is now a strangler/gateway (RestClient proxies only) — no Postgres, Redis, or Kafka in that process.
+
+Fan-out proof: `BookingFanoutE2EIT` creates one booking and waits for all three consumer services to increment `processedCount`.
+
+---
+
+## Milestone 7 — Database-per-service (done)
+
+Process split (M6) left **one shared Postgres**. M7 completes logical + physical separation:
+
+| Database | Owner | Tables |
+|---|---|---|
+| `hotel_catalog` | hotel-service | `countries`, `cities`, `room_types`, `hotels`, `rooms` |
+| `hotel_booking` | booking-service | `bookings`, `payments`, `reviews`, `outbox_events` |
+| `hotel_user` | user-service | `users` |
+
+Cross-DB FKs are gone. `bookings.user_id`, `bookings.room_id`, and `reviews.user_id` are logical references; overlap prevention stays on `hotel_booking.bookings` via `EXCLUDE`.
+
+**Sync reads across boundaries:**
+
+| Caller | Needs | How |
+|---|---|---|
+| booking-service | room price + hotel name at write time | REST → hotel-service `/internal/catalog/*` |
+| booking-service | active user at write time | REST → user-service `/internal/users/{id}` |
+| search-service | denormalized hotel rows for ES | REST → `/internal/catalog/hotels/search-projections` |
+
+Still **one Postgres server process per service** locally (`hotel-db`, `booking-db`, `user-db` containers). Production would use separate managed instances — same ownership rules.
+
+**Next: API Gateway milestone:** JWT, rate limiting, Spring Cloud Gateway.
+
+### Verify
+
+```bash
+docker compose down -v && docker compose up -d
+docker exec hms_hotel_db psql -U hms_user -d hotel_catalog -c '\dt'
+docker exec hms_booking_db psql -U hms_user -d hotel_booking -c '\dt'
+
+cd hotel-service && ./gradlew bootRun &
+cd search-service && ./gradlew bootRun &
+cd booking-service && ./gradlew bootRun &
+cd backend && ./gradlew e2eTest
+```
+
+---
+
+## Extraction order
+
+1. **Notification** — done. Stable event input, no DB writes, lowest blast radius.
+2. **Search** — done. Read model, ES + admin APIs, strangler proxy.
+3. **Analytics / Recommendation** — done. Same Kafka consumer pattern as Notification, unique retry/DLT suffixes.
+4. **Hotel** — done. Catalog reads + Redis cache; Booking snapshots hotel name via catalog REST.
+5. **Booking last** — done. Lock + EXCLUDE + outbox moved together; `:8080` is now a strangler/gateway only.
 
 > Rule: extract the lowest-risk consumer first; never start by exploding the
 > transactional core.
@@ -318,8 +486,10 @@ This project is the same architecture at learning scale.
 | 2 — Target architecture | ✅ | Gateway, sync/async rule, one-writer-per-table, contracts not code, 3 DTO shapes |
 | 3 — Containerize monolith | ✅ | Multi-stage builds, container networking, 12-factor config, health-based orchestration |
 | 4 — CI/CD | ✅ | Unit/IT split, compose-in-CI, SonarQube CE (self-hosted), build ≠ deploy |
-| 5 — Extract first service | ⏳ | — |
-| 6 — Extract remaining | ⏳ | — |
+| 5 — Extract Notification Service | ✅ | First microservice; Kafka-only; E2E test across services |
+| 6 — Extract remaining | ✅ | Search, Analytics, Recommendation, Hotel, Booking; :8080 is the strangler |
+| 7 — Database-per-service | ✅ | `hotel_catalog` + `hotel_booking` + `hotel_user`; catalog/user REST for cross-boundary reads |
+| 8 — User service + Sonar on extracted services | ✅ | user-service `:8088`; Jacoco + Sonar per module in CI |
 
 ---
 

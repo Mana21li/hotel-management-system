@@ -1,5 +1,5 @@
 /**
- * HTTP layer: REST endpoints, request validation, HTTP status codes.
- * Controllers delegate to services and return DTOs — never entities.
+ * HTTP layer: public REST paths stay here. Controllers delegate to
+ * RestClient gateways, return DTOs, and never talk to a database.
  */
 package com.hotelbooking.controller;

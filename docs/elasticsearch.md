@@ -212,17 +212,17 @@ curl -s 'http://localhost:8080/api/search/hotels?q=tajj' | jq .   # typo still f
 
 ## Key classes
 
-| Class | Role |
-|---|---|
-| `HotelSearchDocument` | ES document shape (denormalized) |
-| `HotelSearchSyncService` | Postgres → bulk index + `indexHotelById` |
-| `HotelSearchEventService` | Enqueue `HotelUpserted` via outbox |
-| `HotelSearchEventConsumer` | Kafka → ES upsert |
-| `HotelSearchAdminController` | `POST .../reindex`, `POST .../{id}/sync` |
-| `HotelSearchService` | ES queries |
-| `HotelSearchController` | `GET /api/search/hotels` |
-| `HotelSearchCriteria` / `HotelSearchSort` | Filters, sort, page |
-| `SearchServiceUnavailableException` | Maps to HTTP 503 |
+| Class | Where | Role |
+|---|---|---|
+| `HotelSearchDocument` | search-service | ES document shape (denormalized) |
+| `HotelSearchSyncService` | search-service | Postgres → bulk index + `indexHotelById` |
+| outbox + `HotelUpserted` | booking-service | Enqueue catalog changes via outbox |
+| `HotelSearchEventConsumer` | search-service | Kafka → ES upsert |
+| `HotelSearchAdminController` | backend (proxy) + search-service | `POST .../reindex`, `POST .../{id}/sync` |
+| `HotelSearchService` | search-service | ES queries |
+| `HotelSearchController` | backend (proxy) | `GET /api/search/hotels` |
+| `HotelSearchCriteria` / `HotelSearchSort` | search-service | Filters, sort, page |
+| `SearchServiceUnavailableException` | backend | Maps to HTTP 503 |
 
 ---
 
@@ -256,7 +256,7 @@ Kibana Dev Tools: [http://localhost:5601](http://localhost:5601)
 |---|---|
 | Batch reindex + Kafka `HotelUpserted` | Same patterns + CDC optional |
 | 1 node | Multi-node cluster, replicas, snapshots |
-| Search in monolith | Dedicated search service |
+| search-service (extracted) | Same + dedicated cluster / SRE ownership |
 | Alias `hotels` | Blue/green reindex on mapping changes |
 | 503 if ES down | Circuit breakers, degraded UX, core booking unaffected |
 

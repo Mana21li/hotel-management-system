@@ -27,7 +27,10 @@ docker compose ps             # hms_redis should be healthy
 | `maxmemory-policy` | `allkeys-lru` | Evict least-recently-used keys when full |
 | Persistence volume | **none** | Cache + locks are disposable; Postgres is truth |
 
-Spring Boot connects via `application.yml`:
+Hotel cache lives in **hotel-service**. The booking lock lives in **booking-service**.
+The `:8080` strangler does not connect to Redis.
+
+Spring Boot (in those services) connects via `application.yml`:
 
 ```yaml
 spring:
@@ -60,10 +63,11 @@ spring:
 
 ### Key classes
 
-| Class | Role |
-|---|---|
-| `RedisCacheConfig` | `@EnableCaching`, JSON serialization, TTL, no-null caching |
-| `HotelService` | `@Cacheable` on read methods |
+| Class | Where | Role |
+|---|---|---|
+| `RedisCacheConfig` | hotel-service | `@EnableCaching`, JSON serialization, TTL, no-null caching |
+| `HotelService` | hotel-service | `@Cacheable` on read methods |
+| Redis lock | booking-service | Serializes concurrent `POST /api/bookings` for the same room + dates |
 
 ### Inspect cache keys
 

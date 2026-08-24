@@ -3,8 +3,8 @@ package com.hotelbooking.dto.response;
 /**
  * API representation of a hotel returned to clients.
  * <p>
- * Intentionally smaller than {@link com.hotelbooking.entity.Hotel}: no {@code cityId},
- * {@code isActive}, or audit timestamps. Those are persistence/internal concerns.
+ * Intentionally smaller than the persistence model: no {@code cityId},
+ * {@code isActive}, or audit timestamps. Those stay inside hotel-service.
  */
 public record HotelResponse(
         Long id,

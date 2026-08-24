@@ -3,6 +3,7 @@
 > **Status:** Step 2 — first vertical slice (read-only).  
 > **Scope:** List and fetch hotels. No create/update/delete yet.  
 > **Base URL:** `http://localhost:8080` (local dev)
+> **Owner:** hotel-service. The `:8080` strangler proxies hotel reads.
 
 ---
 
@@ -162,14 +163,17 @@ Content-Type: application/json
 
 ## Implementation checklist
 
-| Layer | Class | Responsibility |
-|---|---|---|
-| Entity | `Hotel` | Maps `hotels` table |
-| Repository | `HotelRepository` | `findByActiveTrue()`, `findById()` |
-| DTO | `HotelResponse` | API response shape |
-| Service | `HotelService` | Fetch + map entity → DTO |
-| Controller | `HotelController` | HTTP mapping |
-| Exception | `GlobalExceptionHandler` | 404 for missing hotel |
+Public URLs stay on `:8080`. Catalog reads live in `hotel-service`.
+
+| Layer | Class | Where | Responsibility |
+|---|---|---|---|
+| Entity | `Hotel` | hotel-service | Maps `hotels` table |
+| Repository | `HotelRepository` | hotel-service | `findByActiveTrue()`, `findById()` |
+| DTO | `HotelResponse` | both (`backend` copies the JSON shape) | API response shape |
+| Service | `HotelService` | hotel-service | Fetch + map entity → DTO; Redis cache |
+| Gateway | `HotelServiceGateway` | backend (`:8080`) | RestClient proxy |
+| Controller | `HotelController` | both (same path) | HTTP mapping |
+| Exception | `GlobalExceptionHandler` | both | 404 for missing hotel |
 
 ---
 
