@@ -3,6 +3,7 @@
 > **Status:** Step 3 — booking workflow (first write endpoint).
 > **Scope:** Create a booking. Cancel/list come in later slices.
 > **Base URL:** `http://localhost:8080` (local dev)
+> **Owner:** booking-service. The `:8080` strangler proxies `POST /api/bookings`.
 
 ---
 

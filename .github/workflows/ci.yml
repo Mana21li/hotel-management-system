@@ -66,7 +66,12 @@ jobs:
           cat > .env <<'EOF'
           POSTGRES_USER=hms_user
           POSTGRES_PASSWORD=hms_local_password
-          POSTGRES_DB=hotel_management
+          HOTEL_POSTGRES_PORT=5433
+          BOOKING_POSTGRES_PORT=5434
+          USER_POSTGRES_PORT=5435
+          HOTEL_POSTGRES_DB=hotel_catalog
+          BOOKING_POSTGRES_DB=hotel_booking
+          USER_POSTGRES_DB=hotel_user
           POSTGRES_PORT=5432
           REDIS_PORT=6379
           ELASTICSEARCH_PORT=9200
@@ -82,19 +87,21 @@ jobs:
 
       - name: Start infrastructure (Postgres, Redis, ES, Kafka)
         working-directory: .
-        run: docker compose up -d db redis elasticsearch kafka
+        run: docker compose up -d user-db hotel-db booking-db redis elasticsearch kafka
 
       - name: Wait for healthy infrastructure
         working-directory: .
         run: |
           echo "Waiting for compose services to become healthy..."
           for i in $(seq 1 60); do
-            db=$(docker inspect -f '{{.State.Health.Status}}' hms_postgres 2>/dev/null || echo starting)
+            user_db=$(docker inspect -f '{{.State.Health.Status}}' hms_user_db 2>/dev/null || echo starting)
+            hotel_db=$(docker inspect -f '{{.State.Health.Status}}' hms_hotel_db 2>/dev/null || echo starting)
+            booking_db=$(docker inspect -f '{{.State.Health.Status}}' hms_booking_db 2>/dev/null || echo starting)
             redis=$(docker inspect -f '{{.State.Health.Status}}' hms_redis 2>/dev/null || echo starting)
             es=$(docker inspect -f '{{.State.Health.Status}}' hms_elasticsearch 2>/dev/null || echo starting)
             kafka=$(docker inspect -f '{{.State.Health.Status}}' hms_kafka 2>/dev/null || echo starting)
-            echo "attempt $i: db=$db redis=$redis es=$es kafka=$kafka"
-            if [ "$db" = healthy ] && [ "$redis" = healthy ] && [ "$es" = healthy ] && [ "$kafka" = healthy ]; then
+            echo "attempt $i: user_db=$user_db hotel_db=$hotel_db booking_db=$booking_db redis=$redis es=$es kafka=$kafka"
+            if [ "$user_db" = healthy ] && [ "$hotel_db" = healthy ] && [ "$booking_db" = healthy ] && [ "$redis" = healthy ] && [ "$es" = healthy ] && [ "$kafka" = healthy ]; then
               exit 0
             fi
             sleep 5
@@ -131,24 +138,264 @@ jobs:
             exit 1
           fi
 
+      - name: Notification service tests
+        working-directory: notification-service
+        run: |
+          chmod +x gradlew
+          ./gradlew test --console=plain
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+
+      - name: Start notification service for E2E
+        working-directory: notification-service
+        run: |
+          ./gradlew bootJar -x test --console=plain
+          nohup java -jar build/libs/*.jar > /tmp/notification-service.log 2>&1 &
+          echo $! > /tmp/notification-service.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8082/internal/stats >/dev/null; then
+              echo "notification-service is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/notification-service.log
+          exit 1
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+          NOTIFICATION_SERVICE_PORT: '8082'
+
+      - name: Analytics service tests
+        working-directory: analytics-service
+        run: |
+          chmod +x gradlew
+          ./gradlew test --console=plain
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+
+      - name: Start analytics service for E2E
+        working-directory: analytics-service
+        run: |
+          ./gradlew bootJar -x test --console=plain
+          nohup java -jar build/libs/*.jar > /tmp/analytics-service.log 2>&1 &
+          echo $! > /tmp/analytics-service.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8084/internal/stats >/dev/null; then
+              echo "analytics-service is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/analytics-service.log
+          exit 1
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+          ANALYTICS_SERVICE_PORT: '8084'
+
+      - name: Recommendation service tests
+        working-directory: recommendation-service
+        run: |
+          chmod +x gradlew
+          ./gradlew test --console=plain
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+
+      - name: Start recommendation service for E2E
+        working-directory: recommendation-service
+        run: |
+          ./gradlew bootJar -x test --console=plain
+          nohup java -jar build/libs/*.jar > /tmp/recommendation-service.log 2>&1 &
+          echo $! > /tmp/recommendation-service.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8085/internal/stats >/dev/null; then
+              echo "recommendation-service is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/recommendation-service.log
+          exit 1
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+          RECOMMENDATION_SERVICE_PORT: '8085'
+
+      - name: User service tests
+        working-directory: user-service
+        run: |
+          chmod +x gradlew
+          ./gradlew test integrationTest --console=plain
+        env:
+          USER_POSTGRES_HOST: 127.0.0.1
+          USER_POSTGRES_PORT: '5435'
+          USER_POSTGRES_DB: hotel_user
+          POSTGRES_USER: hms_user
+          POSTGRES_PASSWORD: hms_local_password
+
+      - name: Start user service for E2E
+        working-directory: user-service
+        run: |
+          ./gradlew bootJar -x test --console=plain
+          nohup java -jar build/libs/*.jar > /tmp/user-service.log 2>&1 &
+          echo $! > /tmp/user-service.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8088/internal/health >/dev/null; then
+              echo "user-service is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/user-service.log
+          exit 1
+        env:
+          USER_POSTGRES_HOST: 127.0.0.1
+          USER_POSTGRES_PORT: '5435'
+          USER_POSTGRES_DB: hotel_user
+          POSTGRES_USER: hms_user
+          POSTGRES_PASSWORD: hms_local_password
+          USER_SERVICE_PORT: '8088'
+
+      - name: Hotel service tests
+        working-directory: hotel-service
+        run: |
+          chmod +x gradlew
+          ./gradlew test integrationTest --console=plain
+        env:
+          HOTEL_POSTGRES_HOST: 127.0.0.1
+          HOTEL_POSTGRES_PORT: '5433'
+          HOTEL_POSTGRES_DB: hotel_catalog
+          POSTGRES_USER: hms_user
+          POSTGRES_PASSWORD: hms_local_password
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: '6379'
+
+      - name: Start hotel service for E2E
+        working-directory: hotel-service
+        run: |
+          ./gradlew bootJar -x test --console=plain
+          nohup java -jar build/libs/*.jar > /tmp/hotel-service.log 2>&1 &
+          echo $! > /tmp/hotel-service.pid
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8086/api/hotels >/dev/null; then
+              echo "hotel-service is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/hotel-service.log
+          exit 1
+        env:
+          HOTEL_POSTGRES_HOST: 127.0.0.1
+          HOTEL_POSTGRES_PORT: '5433'
+          HOTEL_POSTGRES_DB: hotel_catalog
+          POSTGRES_USER: hms_user
+          POSTGRES_PASSWORD: hms_local_password
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: '6379'
+          HOTEL_SERVICE_PORT: '8086'
+
+      - name: Search service tests
+        working-directory: search-service
+        run: |
+          chmod +x gradlew
+          ./gradlew test integrationTest --console=plain
+        env:
+          HOTEL_SERVICE_URL: http://127.0.0.1:8086
+          ELASTICSEARCH_URI: http://127.0.0.1:9200
+          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+
+      - name: Start search service for E2E
+        working-directory: search-service
+        run: |
+          ./gradlew bootJar -x test --console=plain
+          nohup java -jar build/libs/*.jar > /tmp/search-service.log 2>&1 &
+          echo $! > /tmp/search-service.pid
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8083/internal/stats >/dev/null; then
+              echo "search-service is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/search-service.log
+          exit 1
+        env:
+          HOTEL_SERVICE_URL: http://127.0.0.1:8086
+          ELASTICSEARCH_URI: http://127.0.0.1:9200
+          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+          SEARCH_SERVICE_PORT: '8083'
+
+      - name: Booking service tests
+        working-directory: booking-service
+        run: |
+          chmod +x gradlew
+          ./gradlew test integrationTest --console=plain
+        env:
+          BOOKING_POSTGRES_HOST: 127.0.0.1
+          BOOKING_POSTGRES_PORT: '5434'
+          BOOKING_POSTGRES_DB: hotel_booking
+          POSTGRES_USER: hms_user
+          POSTGRES_PASSWORD: hms_local_password
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: '6379'
+          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+          HOTEL_SERVICE_URL: http://127.0.0.1:8086
+          USER_SERVICE_URL: http://127.0.0.1:8088
+
+      - name: Start booking service for E2E
+        working-directory: booking-service
+        run: |
+          ./gradlew bootJar -x test --console=plain
+          nohup java -jar build/libs/*.jar > /tmp/booking-service.log 2>&1 &
+          echo $! > /tmp/booking-service.pid
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8087/internal/health >/dev/null; then
+              echo "booking-service is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/booking-service.log
+          exit 1
+        env:
+          BOOKING_POSTGRES_HOST: 127.0.0.1
+          BOOKING_POSTGRES_PORT: '5434'
+          BOOKING_POSTGRES_DB: hotel_booking
+          POSTGRES_USER: hms_user
+          POSTGRES_PASSWORD: hms_local_password
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: '6379'
+          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+          HOTEL_SERVICE_URL: http://127.0.0.1:8086
+          USER_SERVICE_URL: http://127.0.0.1:8088
+          BOOKING_SERVICE_PORT: '8087'
+
       - name: Integration tests
         run: ./gradlew integrationTest --console=plain
         env:
-          POSTGRES_HOST: 127.0.0.1
-          POSTGRES_USER: hms_user
-          POSTGRES_PASSWORD: hms_local_password
-          POSTGRES_DB: hotel_management
-          POSTGRES_PORT: '5432'
-          REDIS_HOST: 127.0.0.1
-          REDIS_PORT: '6379'
-          ELASTICSEARCH_URI: http://127.0.0.1:9200
-          KAFKA_BOOTSTRAP_SERVERS: 127.0.0.1:9092
+          SEARCH_SERVICE_URL: http://127.0.0.1:8083
+          HOTEL_SERVICE_URL: http://127.0.0.1:8086
+          BOOKING_SERVICE_URL: http://127.0.0.1:8087
+
+      - name: E2E tests (strangler → extracted services)
+        run: ./gradlew e2eTest --console=plain
+        env:
+          SEARCH_SERVICE_URL: http://127.0.0.1:8083
+          HOTEL_SERVICE_URL: http://127.0.0.1:8086
+          BOOKING_SERVICE_URL: http://127.0.0.1:8087
+          NOTIFICATION_SERVICE_URL: http://127.0.0.1:8082
+          ANALYTICS_SERVICE_URL: http://127.0.0.1:8084
+          RECOMMENDATION_SERVICE_URL: http://127.0.0.1:8085
 
       # ------------------------------------------------------------------
       # 3. Coverage + SonarQube Community Edition (self-hosted)
       # ------------------------------------------------------------------
-      - name: Jacoco coverage report
-        run: ./gradlew jacocoTestReport --console=plain
+      - name: Jacoco coverage reports (all modules)
+        working-directory: .
+        run: |
+          for dir in backend notification-service analytics-service recommendation-service search-service hotel-service booking-service user-service; do
+            echo "=== Jacoco: $dir ==="
+            (cd "$dir" && chmod +x gradlew && ./gradlew jacocoTestReport --console=plain)
+          done
 
       - name: Start SonarQube Community Edition
         working-directory: .
@@ -200,12 +447,16 @@ jobs:
           unzip -q /tmp/sonar-scanner.zip -d /tmp
           echo "/tmp/sonar-scanner-${SCANNER_VERSION}-linux-x64/bin" >> "$GITHUB_PATH"
 
-      - name: SonarQube Community Edition analysis
-        working-directory: backend
+      - name: SonarQube Community Edition analysis (all modules)
+        working-directory: .
         env:
           SONAR_TOKEN: ${{ steps.sonar_token.outputs.token }}
           SONAR_HOST_URL: http://127.0.0.1:9000
-        run: sonar-scanner -Dsonar.host.url="$SONAR_HOST_URL" -Dsonar.token="$SONAR_TOKEN"
+        run: |
+          for dir in backend notification-service analytics-service recommendation-service search-service hotel-service booking-service user-service; do
+            echo "=== Sonar: $dir ==="
+            (cd "$dir" && sonar-scanner -Dsonar.host.url="$SONAR_HOST_URL" -Dsonar.token="$SONAR_TOKEN")
+          done
 
       # ------------------------------------------------------------------
       # 4. Build artifact
@@ -218,7 +469,40 @@ jobs:
       # ------------------------------------------------------------------
       - name: Docker build (no push)
         working-directory: .
-        run: docker build -t hotel-booking-api:${{ github.sha }} ./backend
+        run: |
+          docker build -t hotel-booking-api:${{ github.sha }} ./backend
+          docker build -t notification-service:${{ github.sha }} ./notification-service
+          docker build -t search-service:${{ github.sha }} ./search-service
+          docker build -t analytics-service:${{ github.sha }} ./analytics-service
+          docker build -t recommendation-service:${{ github.sha }} ./recommendation-service
+          docker build -t hotel-service:${{ github.sha }} ./hotel-service
+          docker build -t booking-service:${{ github.sha }} ./booking-service
+          docker build -t user-service:${{ github.sha }} ./user-service
+
+      - name: Stop extracted services
+        if: always()
+        run: |
+          if [ -f /tmp/notification-service.pid ]; then
+            kill "$(cat /tmp/notification-service.pid)" || true
+          fi
+          if [ -f /tmp/search-service.pid ]; then
+            kill "$(cat /tmp/search-service.pid)" || true
+          fi
+          if [ -f /tmp/analytics-service.pid ]; then
+            kill "$(cat /tmp/analytics-service.pid)" || true
+          fi
+          if [ -f /tmp/recommendation-service.pid ]; then
+            kill "$(cat /tmp/recommendation-service.pid)" || true
+          fi
+          if [ -f /tmp/hotel-service.pid ]; then
+            kill "$(cat /tmp/hotel-service.pid)" || true
+          fi
+          if [ -f /tmp/booking-service.pid ]; then
+            kill "$(cat /tmp/booking-service.pid)" || true
+          fi
+          if [ -f /tmp/user-service.pid ]; then
+            kill "$(cat /tmp/user-service.pid)" || true
+          fi
 
       - name: Tear down infrastructure
         if: always()

@@ -1,12 +1,10 @@
 package com.hotelbooking.exception;
 
-import co.elastic.clients.elasticsearch._types.ElasticsearchException;
-
 import java.io.IOException;
 import java.net.ConnectException;
 
 /**
- * Thrown when Elasticsearch is down, unreachable, or the search index is missing.
+ * Thrown when the search service (or Elasticsearch behind it) is unavailable.
  * Mapped to HTTP 503 so clients can retry.
  */
 public class SearchServiceUnavailableException extends RuntimeException {
@@ -16,18 +14,11 @@ public class SearchServiceUnavailableException extends RuntimeException {
     }
 
     public static SearchServiceUnavailableException from(Throwable cause) {
-        if (cause instanceof ElasticsearchException esEx) {
-            int status = esEx.response().status();
-            if (status == 404) {
-                return new SearchServiceUnavailableException(
-                        "Search index not found. Run POST /api/admin/search/hotels/reindex", cause);
-            }
-        }
         if (isConnectionFailure(cause)) {
             return new SearchServiceUnavailableException(
                     "Search service is temporarily unavailable", cause);
         }
-        return new SearchServiceUnavailableException("Elasticsearch operation failed", cause);
+        return new SearchServiceUnavailableException("Search operation failed", cause);
     }
 
     private static boolean isConnectionFailure(Throwable cause) {

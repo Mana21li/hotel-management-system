@@ -1,7 +1,7 @@
 package com.hotelbooking.controller;
 
 import com.hotelbooking.dto.response.HotelResponse;
-import com.hotelbooking.service.HotelService;
+import com.hotelbooking.hotel.HotelServiceGateway;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -10,36 +10,26 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * HTTP adapter for hotel read APIs.
- * <p>
+ * HTTP adapter for hotel read APIs. Implementation lives in hotel-service.
  * Contract: {@code docs/api/hotels.md}
- * <p>
- * This class handles HTTP only — parsing paths, delegating to {@link HotelService},
- * returning JSON. No database access or entity-to-DTO mapping here.
  */
 @RestController
 @RequestMapping("/api/hotels")
 public class HotelController {
 
-    private final HotelService hotelService;
+    private final HotelServiceGateway hotelServiceGateway;
 
-    public HotelController(HotelService hotelService) {
-        this.hotelService = hotelService;
+    public HotelController(HotelServiceGateway hotelServiceGateway) {
+        this.hotelServiceGateway = hotelServiceGateway;
     }
 
-    /**
-     * GET /api/hotels — list all active hotels.
-     */
     @GetMapping
     public List<HotelResponse> listHotels() {
-        return hotelService.listActiveHotels();
+        return hotelServiceGateway.listActiveHotels();
     }
 
-    /**
-     * GET /api/hotels/{id} — fetch one active hotel by id.
-     */
     @GetMapping("/{id}")
     public HotelResponse getHotel(@PathVariable Long id) {
-        return hotelService.getActiveHotelById(id);
+        return hotelServiceGateway.getActiveHotelById(id);
     }
 }

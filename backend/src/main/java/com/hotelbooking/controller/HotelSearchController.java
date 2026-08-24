@@ -1,9 +1,7 @@
 package com.hotelbooking.controller;
 
 import com.hotelbooking.dto.response.HotelSearchResponse;
-import com.hotelbooking.search.HotelSearchCriteria;
-import com.hotelbooking.search.HotelSearchService;
-import com.hotelbooking.search.HotelSearchSort;
+import com.hotelbooking.search.SearchServiceGateway;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.PositiveOrZero;
@@ -14,31 +12,19 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Public search API backed by Elasticsearch.
- * <p>
- * Read path only — booking and hotel detail still use Postgres as source of truth.
+ * Public search API — same paths as before. Implementation lives in search-service.
  */
 @RestController
 @Validated
 @RequestMapping("/api/search/hotels")
 public class HotelSearchController {
 
-    private final HotelSearchService hotelSearchService;
+    private final SearchServiceGateway searchServiceGateway;
 
-    public HotelSearchController(HotelSearchService hotelSearchService) {
-        this.hotelSearchService = hotelSearchService;
+    public HotelSearchController(SearchServiceGateway searchServiceGateway) {
+        this.searchServiceGateway = searchServiceGateway;
     }
 
-    /**
-     * GET /api/search/hotels — full-text search with filters, sort, and pagination.
-     *
-     * @param cityId   exact filter on denormalized city id
-     * @param minStars minimum star rating (inclusive)
-     * @param maxPrice maximum cheapest-room nightly price (inclusive)
-     * @param sort     relevance (default), price_asc, price_desc, stars_desc, stars_asc
-     * @param page     zero-based page index
-     * @param size     page size (max 100)
-     */
     @GetMapping
     public HotelSearchResponse search(
             @RequestParam(name = "q", required = false) String query,
@@ -48,16 +34,6 @@ public class HotelSearchController {
             @RequestParam(required = false, defaultValue = "relevance") String sort,
             @RequestParam(defaultValue = "0") @Min(0) int page,
             @RequestParam(defaultValue = "20") @Min(1) @Max(100) int size) {
-
-        HotelSearchCriteria criteria = new HotelSearchCriteria(
-                query,
-                cityId,
-                minStars,
-                maxPrice,
-                HotelSearchSort.fromParam(sort),
-                page,
-                size
-        );
-        return hotelSearchService.search(criteria);
+        return searchServiceGateway.search(query, cityId, minStars, maxPrice, sort, page, size);
     }
 }

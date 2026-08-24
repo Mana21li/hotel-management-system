@@ -1,0 +1,78 @@
+spring:
+  application:
+    name: booking-service
+
+  datasource:
+    url: jdbc:postgresql://${BOOKING_POSTGRES_HOST:${POSTGRES_HOST:localhost}}:${BOOKING_POSTGRES_PORT:${POSTGRES_PORT:5434}}/${BOOKING_POSTGRES_DB:hotel_booking}
+    username: ${POSTGRES_USER:hms_user}
+    password: ${POSTGRES_PASSWORD:hms_local_password}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: UTC
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  cache:
+    type: redis
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: true
+    consumer:
+      group-id: booking-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.hotelbooking.*
+        spring.json.use.type.headers: false
+
+hotel:
+  service:
+    base-url: ${HOTEL_SERVICE_URL:http://127.0.0.1:8086}
+
+user:
+  service:
+    base-url: ${USER_SERVICE_URL:http://127.0.0.1:8088}
+
+booking:
+  lock:
+    wait-seconds: 3
+    lease-seconds: 30
+
+app:
+  kafka:
+    topics:
+      booking-events:
+        partitions: 3
+      hotel-events:
+        partitions: 3
+    retryable:
+      attempts: 3
+      delay-ms: 200
+  outbox:
+    poll-interval-ms: 500
+    batch-size: 50
+
+server:
+  port: ${BOOKING_SERVICE_PORT:8087}
+
+logging:
+  level:
+    org.hibernate.SQL: debug
+    com.hotelbooking: INFO

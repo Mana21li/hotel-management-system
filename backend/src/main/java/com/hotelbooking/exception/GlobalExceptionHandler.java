@@ -84,12 +84,16 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, message, request);
     }
 
-    // --- 503 Service Unavailable: Elasticsearch down / index missing -----------
+    // --- 503 Service Unavailable: extracted service down -------------------------
 
-    @ExceptionHandler(SearchServiceUnavailableException.class)
-    public ResponseEntity<ErrorResponse> handleSearchUnavailable(
-            SearchServiceUnavailableException ex, HttpServletRequest request) {
-        log.warn("Search unavailable for {} {}: {}", request.getMethod(), request.getRequestURI(), ex.getMessage());
+    @ExceptionHandler({
+            SearchServiceUnavailableException.class,
+            HotelServiceUnavailableException.class,
+            BookingServiceUnavailableException.class
+    })
+    public ResponseEntity<ErrorResponse> handleDownstreamUnavailable(
+            RuntimeException ex, HttpServletRequest request) {
+        log.warn("Downstream unavailable for {} {}: {}", request.getMethod(), request.getRequestURI(), ex.getMessage());
         return build(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), request);
     }
 

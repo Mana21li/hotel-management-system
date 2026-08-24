@@ -1,23 +1,26 @@
-# Database initialization scripts
+# Database initialization
 
-Any `.sql` or `.sh` files placed in this folder are executed **automatically**
-by the PostgreSQL container — but **only the first time** the database is
-created (i.e. when the data volume is empty).
+Each service owns a **dedicated Postgres container**:
 
-- Files run in **alphabetical order**, so name them with numeric prefixes:
-  - `01_extensions_and_enums.sql`
-  - `02_tables.sql`
-  - `03_indexes.sql`
-  - `04_triggers.sql`
-  - `05_seed_data.sql`
-- To re-run them from scratch, wipe the volume and start fresh:
+| Container | Database | Init scripts |
+|---|---|---|
+| `hms_hotel_db` | `hotel_catalog` | `db/hotel-catalog/init/*.sql` |
+| `hms_booking_db` | `hotel_booking` | `db/booking/init/*.sql` |
+| `hms_user_db` | `hotel_user` | `db/user/init/*.sql` |
+
+Re-run from scratch:
 
 ```bash
 docker compose down -v
 docker compose up -d
 ```
 
-> Note: this folder is mounted read-only into the container at
-> `/docker-entrypoint-initdb.d`. We'll generate the actual `.sql` files here in
-> a later step, converting the DDL from `docs/database-schema-postgres.md` into
-> runnable migration scripts.
+Connect:
+
+```bash
+docker exec -it hms_hotel_db psql -U "$POSTGRES_USER" -d hotel_catalog
+docker exec -it hms_booking_db psql -U "$POSTGRES_USER" -d hotel_booking
+docker exec -it hms_user_db psql -U "$POSTGRES_USER" -d hotel_user
+```
+
+Legacy single-instance scripts: `db/legacy/monolith-init/` and `db/init/00-create-databases.sh`.

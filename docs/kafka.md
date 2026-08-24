@@ -149,18 +149,18 @@ Creating a mailbox ≠ putting letters in it.
 
 | Class | Role |
 |---|---|
-| `KafkaConfig` | Topic name constant + `NewTopic` bean for `booking-events` |
-| `KafkaConnectionIT` | Integration test: describe cluster + assert topic exists |
+| `KafkaConfig` | Topic name constant + `NewTopic` bean for `booking-events` (in `booking-service`) |
+| `KafkaConnectionIT` | Integration test: describe cluster + assert topic exists (in `booking-service`) |
 
 ### Verify connection
 
 ```bash
 docker compose up -d kafka
 
-cd backend && ./gradlew test --tests "com.hotelbooking.kafka.KafkaConnectionIT"
+cd booking-service && ./gradlew integrationTest --tests "com.hotelbooking.kafka.KafkaConnectionIT"
 
-# Or bootRun → Kafka UI → Topics → booking-events (3 partitions)
-./gradlew bootRun
+# Or bootRun booking-service → Kafka UI → Topics → booking-events (3 partitions)
+cd booking-service && ./gradlew bootRun
 # http://localhost:8081
 ```
 
@@ -246,14 +246,14 @@ curl -s -X POST http://localhost:8080/api/bookings \
   -d '{"userId":1,"roomId":20,"checkInDate":"2028-08-01","checkOutDate":"2028-08-03"}' | jq .
 
 # Optional: see unpublished → published in Postgres
-docker exec hms_postgres psql -U hms_user -d hotel_management \
+docker exec hms_booking_db psql -U hms_user -d hotel_booking \
   -c "SELECT outbox_id, topic, event_type, published_at IS NOT NULL AS published FROM outbox_events ORDER BY outbox_id DESC LIMIT 5;"
 ```
 
 You should see JSON with `"eventType":"BookingCreated"` in Terminal 1 / Kafka UI.
 
 ```bash
-./gradlew test --tests "com.hotelbooking.kafka.BookingCreatedEventIT"
+cd booking-service && ./gradlew integrationTest --tests "com.hotelbooking.kafka.BookingCreatedEventIT"
 ```
 
 ---
@@ -310,12 +310,14 @@ curl -s -X POST http://localhost:8080/api/bookings \
 Kafka UI → Consumer Groups: `notification-group`, `analytics-group`, `recommendation-group`.
 
 ```bash
-./gradlew test --tests "com.hotelbooking.kafka.BookingConsumersIT"
+cd notification-service && ./gradlew integrationTest --tests "com.hotelbooking.notification.kafka.NotificationBookingConsumerIT"
+cd analytics-service && ./gradlew integrationTest --tests "com.hotelbooking.analytics.kafka.AnalyticsBookingConsumerIT"
+cd recommendation-service && ./gradlew integrationTest --tests "com.hotelbooking.recommendation.kafka.RecommendationBookingConsumerIT"
 ```
 
 ### HLD note
 
-Today all three listeners run **inside the monolith**. At Booking.com scale each group becomes its **own service**, still reading the same topic — no change to the producer.
+Each group is already its **own service** (`notification-service`, `analytics-service`, `recommendation-service`). They still read the same topic — the producer in `booking-service` does not change.
 
 ---
 
@@ -386,7 +388,7 @@ docker exec -it hms_kafka /opt/kafka/bin/kafka-console-consumer.sh \
 Integration test publishes a poison event directly (does not need a real HTTP booking):
 
 ```bash
-./gradlew test --tests "com.hotelbooking.kafka.BookingEventDltIT"
+cd notification-service && ./gradlew integrationTest --tests "com.hotelbooking.notification.kafka.BookingEventDltIT"
 ```
 
 Normal bookings (`BK-…`) still succeed on Notification without hitting the DLT.
@@ -484,7 +486,7 @@ curl -s -X POST http://localhost:8080/api/bookings \
 ```
 
 ```bash
-./gradlew test --tests "com.hotelbooking.kafka.BookingEventPartitionKeyIT"
+cd booking-service && ./gradlew integrationTest --tests "com.hotelbooking.kafka.BookingEventPartitionKeyIT"
 ```
 
 ### Production notes
@@ -535,7 +537,7 @@ Good (outbox):
 `db/init/06_outbox_events.sql` — apply on existing DBs (init scripts only run on fresh volumes):
 
 ```bash
-docker exec -i hms_postgres psql -U hms_user -d hotel_management \
+docker exec -i hms_booking_db psql -U hms_user -d hotel_booking \
   < db/init/06_outbox_events.sql
 ```
 
@@ -588,7 +590,7 @@ docker exec -it hms_kafka /opt/kafka/bin/kafka-console-consumer.sh \
 ```
 
 ```bash
-./gradlew test --tests "com.hotelbooking.kafka.HotelSearchEventConsumerIT"
+cd search-service && ./gradlew integrationTest --tests "com.hotelbooking.search.kafka.HotelSearchEventConsumerIT"
 ```
 
 See also `docs/elasticsearch.md` (sync section).
@@ -623,7 +625,7 @@ UI: [http://localhost:8081](http://localhost:8081)
 |---|---|
 | 1 broker | Multi-broker, multi-AZ |
 | Outbox + in-process relay | Outbox + dedicated publisher workers / Debezium |
-| Consumers in monolith | Separate consumer services per group |
+| One consumer service per group | Same, plus more partitions / lag dashboards |
 | No auth | SASL/SSL, ACLs per topic |
 | Topic via `NewTopic` | Terraform / topic governance |
 | `@RetryableTopic` | Same + DLT dashboards / replay |

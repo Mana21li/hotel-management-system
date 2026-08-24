@@ -4,3 +4,4 @@ bin/
 *.iml
 .idea/
 HELP.md
+*.hprof

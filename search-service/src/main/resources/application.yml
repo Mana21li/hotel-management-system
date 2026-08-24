@@ -1,0 +1,48 @@
+spring:
+  application:
+    name: search-service
+
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URI:http://localhost:9200}
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        spring.json.add.type.headers: true
+    consumer:
+      group-id: ${app.kafka.consumer-group:hotel-search-group}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.hotelbooking.search.*
+        spring.json.use.type.headers: false
+
+hotel:
+  service:
+    base-url: ${HOTEL_SERVICE_URL:http://127.0.0.1:8086}
+
+search:
+  elasticsearch:
+    hotels-index-alias: hotels
+    fuzzy-enabled: true
+    max-query-length: 200
+
+app:
+  kafka:
+    consumer-group: hotel-search-group
+    retryable:
+      attempts: 3
+      delay-ms: 200
+    topics:
+      hotel-events: hotel-events
+
+server:
+  port: ${SEARCH_SERVICE_PORT:8083}
+
+logging:
+  level:
+    com.hotelbooking.search: INFO

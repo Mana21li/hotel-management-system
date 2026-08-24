@@ -4,7 +4,7 @@
 # Run everything with:
 #
 #     docker compose up -d                              # infra only
-#     docker compose --profile app up -d --build        # + containerized monolith
+#     docker compose --profile app up -d --build        # + strangler (:8080) + extracted services
 #     docker compose --profile sonar up -d              # + SonarQube CE (http://localhost:9000)
 #     docker compose ps
 #     docker compose down                               # stop (volumes preserved)
@@ -15,7 +15,8 @@
 
 services:
   app:
-    # The Spring Boot monolith, containerized (Stage 4, Milestone 3).
+    # Public API strangler/gateway on :8080 (RestClient proxies only).
+    # No Postgres, Redis, Elasticsearch, or Kafka in this process.
     #
     # Behind a compose PROFILE so the default workflow is unchanged:
     #     docker compose up -d                     → infra only (app via ./gradlew bootRun)
@@ -31,28 +32,17 @@ services:
     ports:
       - "${APP_PORT:-8080}:8080"
 
-    # Inside the Docker network, services are reached by SERVICE NAME on their
-    # CONTAINER port — not localhost, not the host-mapped port:
-    #   db:5432, redis:6379, elasticsearch:9200, kafka:9094 (the docker listener).
     environment:
-      POSTGRES_HOST: db
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      ELASTICSEARCH_URI: http://elasticsearch:9200
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9094
+      SEARCH_SERVICE_URL: http://search-service:8083
+      HOTEL_SERVICE_URL: http://hotel-service:8086
+      BOOKING_SERVICE_URL: http://booking-service:8087
 
     depends_on:
-      db:
+      search-service:
         condition: service_healthy
-      redis:
+      hotel-service:
         condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
-      kafka:
+      booking-service:
         condition: service_healthy
 
     # TCP check via bash (the JRE image has no curl/wget).
@@ -63,43 +53,291 @@ services:
       retries: 10
       start_period: 40s
 
-  db:
-    # Official PostgreSQL image, version 16, on the lightweight Alpine base.
-    # Pinning the version (not "latest") keeps the environment reproducible.
-    image: postgres:16-alpine
+  notification-service:
+    # Extracted notification consumer (Stage 4, Milestone 5).
+    #   docker compose --profile app up -d --build
+    build: ./notification-service
 
-    # A friendly, stable name so `docker exec` commands are predictable.
-    container_name: hms_postgres
+    container_name: hms_notification
 
-    # Restart the container automatically unless you explicitly stopped it.
+    profiles: ["app"]
+
     restart: unless-stopped
 
-    # These env vars configure the database on first startup. They come from
-    # your .env file so no secrets are hard-coded here.
+    ports:
+      - "${NOTIFICATION_SERVICE_PORT:-8082}:8082"
+
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9094
+      NOTIFICATION_SERVICE_PORT: 8082
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8082' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  analytics-service:
+    # Extracted analytics consumer (Stage 4, Milestone 6).
+    build: ./analytics-service
+
+    container_name: hms_analytics
+
+    profiles: ["app"]
+
+    restart: unless-stopped
+
+    ports:
+      - "${ANALYTICS_SERVICE_PORT:-8084}:8084"
+
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9094
+      ANALYTICS_SERVICE_PORT: 8084
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8084' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  recommendation-service:
+    # Extracted recommendation consumer (Stage 4, Milestone 6).
+    build: ./recommendation-service
+
+    container_name: hms_recommendation
+
+    profiles: ["app"]
+
+    restart: unless-stopped
+
+    ports:
+      - "${RECOMMENDATION_SERVICE_PORT:-8085}:8085"
+
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9094
+      RECOMMENDATION_SERVICE_PORT: 8085
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8085' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  search-service:
+    # Extracted search / ES read model (Stage 4, Milestone 6).
+    build: ./search-service
+
+    container_name: hms_search
+
+    profiles: ["app"]
+
+    restart: unless-stopped
+
+    ports:
+      - "${SEARCH_SERVICE_PORT:-8083}:8083"
+
+    environment:
+      HOTEL_SERVICE_URL: http://hotel-service:8086
+      ELASTICSEARCH_URI: http://elasticsearch:9200
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9094
+      SEARCH_SERVICE_PORT: 8083
+
+    depends_on:
+      hotel-service:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8083' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  user-service:
+    # Extracted user profiles (Stage 4, post DB-per-service).
+    build: ./user-service
+
+    container_name: hms_user
+
+    profiles: ["app"]
+
+    restart: unless-stopped
+
+    ports:
+      - "${USER_SERVICE_PORT:-8088}:8088"
+
+    environment:
+      USER_POSTGRES_DB: hotel_user
+      USER_POSTGRES_HOST: user-db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      USER_SERVICE_PORT: 8088
+
+    depends_on:
+      user-db:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8088' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  hotel-service:
+    # Extracted hotel catalog (Stage 4, Milestone 6).
+    build: ./hotel-service
+
+    container_name: hms_hotel
+
+    profiles: ["app"]
+
+    restart: unless-stopped
+
+    ports:
+      - "${HOTEL_SERVICE_PORT:-8086}:8086"
+
+    environment:
+      HOTEL_POSTGRES_DB: hotel_catalog
+      HOTEL_POSTGRES_HOST: hotel-db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      HOTEL_SERVICE_PORT: 8086
+
+    depends_on:
+      hotel-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8086' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  booking-service:
+    # Extracted booking write path (Stage 4, Milestone 6) — lock + EXCLUDE + outbox.
+    build: ./booking-service
+
+    container_name: hms_booking
+
+    profiles: ["app"]
+
+    restart: unless-stopped
+
+    ports:
+      - "${BOOKING_SERVICE_PORT:-8087}:8087"
+
+    environment:
+      BOOKING_POSTGRES_DB: hotel_booking
+      BOOKING_POSTGRES_HOST: booking-db
+      HOTEL_SERVICE_URL: http://hotel-service:8086
+      USER_SERVICE_URL: http://user-service:8088
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9094
+      BOOKING_SERVICE_PORT: 8087
+
+    depends_on:
+      booking-db:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      hotel-service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8087' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  user-db:
+    # User profiles database — owned exclusively by user-service.
+    image: postgres:16-alpine
+    container_name: hms_user_db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-
-    # Expose the database on localhost so tools on your Mac (psql, DBeaver,
-    # your app) can connect to it. Format is HOST_PORT:CONTAINER_PORT.
+      POSTGRES_DB: hotel_user
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-
-    # Persist the actual data in a named Docker volume. Without this, all data
-    # would vanish every time the container is recreated. With it, `down` then
-    # `up` keeps your tables and rows intact.
+      - "${USER_POSTGRES_PORT:-5435}:5432"
     volumes:
-      - hms_pgdata:/var/lib/postgresql/data
-      # Any .sql or .sh files placed in db/init/ run automatically the FIRST
-      # time the database is created (empty volume). Great for auto-loading the
-      # schema. Files run in alphabetical order.
-      - ./db/init:/docker-entrypoint-initdb.d:ro
-
-    # Healthcheck lets Docker (and us) know when Postgres is actually ready to
-    # accept connections, not just when the container has started.
+      - hms_user_pgdata:/var/lib/postgresql/data
+      - ./db/user/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d hotel_user"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  hotel-db:
+    # Catalog database — owned exclusively by hotel-service.
+    image: postgres:16-alpine
+    container_name: hms_hotel_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: hotel_catalog
+    ports:
+      - "${HOTEL_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - hms_hotel_pgdata:/var/lib/postgresql/data
+      - ./db/hotel-catalog/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d hotel_catalog"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  booking-db:
+    # Booking database — owned exclusively by booking-service.
+    image: postgres:16-alpine
+    container_name: hms_booking_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: hotel_booking
+    ports:
+      - "${BOOKING_POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - hms_booking_pgdata:/var/lib/postgresql/data
+      - ./db/booking/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d hotel_booking"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -306,8 +544,12 @@ services:
 
 # Named volume declaration. Docker manages where this lives on disk.
 volumes:
-  hms_pgdata:
-    name: hms_pgdata
+  hms_user_pgdata:
+    name: hms_user_pgdata
+  hms_hotel_pgdata:
+    name: hms_hotel_pgdata
+  hms_booking_pgdata:
+    name: hms_booking_pgdata
   hms_esdata:
     name: hms_esdata
   hms_sonardb:
